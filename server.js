@@ -2,6 +2,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const corsOptions = require('./src/config/allowedOrigins')
 const helmet = require('helmet');
 const morgan = require('morgan');
 const mongoose = require('mongoose');
@@ -13,13 +14,9 @@ const app = express();
 
 // Connect to MongoDB
 connectDB();
-
+app.use(cors(corsOptions))
 // CORS configuration
-const corsOptions = {
-  origin: process.env.CLIENT_URL,
-  credentials: true,
-  optionsSuccessStatus: 200
-};
+
 
 // Middleware
 app.use(helmet());

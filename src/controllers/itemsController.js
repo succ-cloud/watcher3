@@ -1,4 +1,4 @@
-const Product = require('../models/itemsList'); // Make sure this path is correct
+const Product = require('../models/ItemsList'); // Make sure this path is correct
 const { cloudinary } = require('../config/cloudinary');
 
 // ==================== BASIC CRUD OPERATIONS ====================
