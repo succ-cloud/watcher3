@@ -1,47 +1,86 @@
-// Helper functions for common tasks
+// Standard response format
+const sendResponse = (res, statusCode, success, message, data = null, error = null) => {
+  const response = {
+    success,
+    message,
+    timestamp: new Date().toISOString()
+  };
 
-// Generate a random short code for payment links
-const generateShortCode = (productName) => {
-    // Create a slug from product name (remove spaces, special chars)
-    const nameSlug = productName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)+/g, '');
-    
-    // Add random characters for uniqueness
-    const randomChars = Math.random().toString(36).substring(2, 8);
-    
-    return `${nameSlug}-${randomChars}`;
+  if (data) response.data = data;
+  if (error && process.env.NODE_ENV === 'development') response.error = error;
+
+  return res.status(statusCode).json(response);
+};
+
+// Custom error class
+class AppError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+    this.isOperational = true;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+// Async wrapper to avoid try-catch blocks
+const catchAsync = (fn) => {
+  return (req, res, next) => {
+    fn(req, res, next).catch(next);
   };
-  
-  // Format phone number to standard format
-  const normalizePhoneNumber = (phone) => {
-    // Remove all non-digit characters
-    const digitsOnly = phone.replace(/\D/g, '');
-    
-    // Remove +237 prefix if present
-    if (digitsOnly.startsWith('237')) {
-      return digitsOnly.substring(3);
-    }
-    
-    return digitsOnly;
+};
+
+// Generate random string
+const generateRandomString = (length = 6) => {
+  return Math.random().toString(36).substring(2, 2 + length).toUpperCase();
+};
+
+// Format phone number
+const formatPhoneNumber = (phone) => {
+  const cleaned = phone.replace(/\D/g, '');
+  if (cleaned.length === 9) {
+    return `+237 ${cleaned.substring(0, 3)} ${cleaned.substring(3, 6)} ${cleaned.substring(6)}`;
+  }
+  return phone;
+};
+
+// Validate email
+const isValidEmail = (email) => {
+  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return re.test(email);
+};
+
+// Sanitize object (remove specified fields)
+const sanitizeObject = (obj, fieldsToRemove) => {
+  const sanitized = { ...obj };
+  fieldsToRemove.forEach(field => delete sanitized[field]);
+  return sanitized;
+};
+
+// Pagination helper
+const getPagination = (page, limit, total) => {
+  const currentPage = parseInt(page) || 1;
+  const itemsPerPage = parseInt(limit) || 10;
+  const totalPages = Math.ceil(total / itemsPerPage);
+  const skip = (currentPage - 1) * itemsPerPage;
+
+  return {
+    currentPage,
+    itemsPerPage,
+    totalPages,
+    total,
+    skip,
+    hasNext: currentPage < totalPages,
+    hasPrev: currentPage > 1
   };
-  
-  // Generate JWT token
-  const generateToken = (userId) => {
-    // Import jwt
-    const jwt = require('jsonwebtoken');
-    
-    // Create token that expires in 7 days
-    return jwt.sign(
-      { id: userId }, // Payload (data to encode)
-      process.env.JWT_SECRET, // Secret key
-      { expiresIn: process.env.JWT_EXPIRES_IN } // Expiration
-    );
-  };
-  
-  module.exports = {
-    generateShortCode,
-    normalizePhoneNumber,
-    generateToken,
-  };
+};
+
+module.exports = {
+  sendResponse,
+  AppError,
+  catchAsync,
+  generateRandomString,
+  formatPhoneNumber,
+  isValidEmail,
+  sanitizeObject,
+  getPagination
+};

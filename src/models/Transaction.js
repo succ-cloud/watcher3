@@ -1,77 +1,68 @@
+
+// token model
+
+
 const mongoose = require('mongoose');
 
-const TransactionSchema = new mongoose.Schema({
-  // Link to user who owns this transaction
+const tokenSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
+    index: true
   },
   
-  // Link to the product that was purchased
-  productLinkId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'ProductLink',
-    required: true,
-  },
-  
-  // Customer's phone number (encrypted in real app)
-  customerPhone: {
+  token: {
     type: String,
-    required: true,
+    required: true
   },
   
-  // Transaction amount and currency
-  amount: {
-    type: Number,
-    required: true,
-  },
-  
-  currency: {
+  type: {
     type: String,
-    default: 'USD',
-  },
-  
-  // Payment method used
-  paymentMethod: {
-    type: String,
-    enum: ['orange', 'mtn', 'card'],
+    enum: ['refresh', 'access', 'password-reset', 'email-verification'],
     required: true,
+    index: true
   },
   
-  // Transaction status
-  status: {
-    type: String,
-    enum: ['pending', 'completed', 'failed', 'refunded'],
-    default: 'pending',
-  },
-  
-  // Unique transaction ID from payment gateway
-  transactionId: {
-    type: String,
+  expiresAt: {
+    type: Date,
     required: true,
-    unique: true,
+    index: true
   },
   
-  // Track phone verification
-  customerVerified: {
+  blacklisted: {
     type: Boolean,
     default: false,
+    index: true
   },
   
-  verificationAttempts: {
-    type: Number,
-    default: 0,
-  },
+  userAgent: String,
+  ipAddress: String,
   
   createdAt: {
     type: Date,
     default: Date.now,
-  },
-  
-  completedAt: {
-    type: Date,
-  },
+    expires: 60 * 60 * 24 * 7 // Automatically delete after 7 days
+  }
 });
 
-module.exports = mongoose.model('Transaction', TransactionSchema);
+// Compound index for efficient queries
+tokenSchema.index({ userId: 1, type: 1, blacklisted: 1 });
+tokenSchema.index({ token: 1 }, { unique: true, sparse: true });
+
+// Static method to blacklist all user tokens
+tokenSchema.statics.blacklistAllUserTokens = async function(userId, type = null) {
+  const query = { userId };
+  if (type) query.type = type;
+  
+  return this.updateMany(query, { blacklisted: true });
+};
+
+// Static method to cleanup expired tokens
+tokenSchema.statics.cleanup = async function() {
+  return this.deleteMany({ expiresAt: { $lt: new Date() } });
+};
+
+const Token = mongoose.model('Token', tokenSchema);
+
+module.exports = Token;

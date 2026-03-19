@@ -2,50 +2,80 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const corsOptions = require('./src/config/allowedOrigins')
 const helmet = require('helmet');
 const morgan = require('morgan');
 const mongoose = require('mongoose');
+const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 const connectDB = require('./src/config/database');
-const PORT = process.env.PORT || 5000;
+const errorHandler = require('./src/middleware/errorHandler');
+const { sendResponse } = require('./src/utils/helpers');
+const corsOptions = require('./src/config/corsOptions'); // Make sure path is correct
+const verifyJWT = require('./src/middleware/verifyJWT');
+const credentials = require('./src/middleware/credentials'); // Import credentials middleware
+const { logger } = require('./src/middleware/logEvent');
 
-// Initialize Express
+const PORT = process.env.PORT || 5000;
 const app = express();
 
-// Connect to MongoDB
 connectDB();
-app.use(cors(corsOptions))
-// CORS configuration
 
+app.use(logger);
 
-// Middleware
-app.use(helmet());
+// Handle options credentials check - BEFORE CORS!
+app.use(credentials);
+
+// CORS middleware
 app.use(cors(corsOptions));
-app.use(morgan('dev'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+
+// Built-in middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(cookieParser());
+
+// Rate limiting for API routes
+// const apiLimiter = rateLimit({
+//     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW) * 60 * 1000 || 15 * 60 * 1000,
+//     max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
+//     message: {
+//         success: false,
+//         message: 'Too many requests from this IP. Please try again later.'
+//     },
+//     standardHeaders: true,
+//     legacyHeaders: false,
+// });
+
+// app.use('/api', apiLimiter);
 
 // ==================== ROUTES ====================
-
-// Auth Routes
 app.use('/api/auth', require('./src/routes/authRoutes'));
-
-// Product Routes - ADD THIS LINE
+app.use('/api/register', require('./src/routes/register'));
+app.use('/api/logout', require('./src/routes/logOut'));
+app.use('/api/refresh', require('./src/routes/refresh'));
+// Admin routes
+app.use('/api/admin', require('./src/routes/adminRoutes'));
+// Protect product routes with JWT
+// app.use(verifyJWT);
 app.use('/api/products', require('./src/routes/itemsRoutes'));
 
 // Root route
-
 app.get('/', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Payment Card Platform API',
+  sendResponse(res, 200, true, 'Product Management API', {
     version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    documentation: '/api-docs',
     endpoints: {
       auth: {
         register: 'POST /api/auth/register',
         login: 'POST /api/auth/login',
-        test: 'GET /api/auth/test'
+        refreshToken: 'POST /api/auth/refresh-token',
+        logout: 'POST /api/auth/logout',
+        me: 'GET /api/auth/me',
+        changePassword: 'POST /api/auth/change-password',
+        forgotPassword: 'POST /api/auth/forgot-password',
+        resetPassword: 'POST /api/auth/reset-password'
       },
+
       products: {
         getAll: 'GET /api/products',
         getById: 'GET /api/products/:id',
@@ -55,87 +85,161 @@ app.get('/', (req, res) => {
         delete: 'DELETE /api/products/:id',
         search: 'GET /api/products/search',
         advancedSearch: 'POST /api/products/advanced-search',
-        bulkCreate: 'POST /api/products/bulk'
-      }
+        bulkCreate: 'POST /api/products/bulk',
+        stock: 'PATCH /api/products/:id/stock',
+        images: {
+          add: 'POST /api/products/:id/images',
+          delete: 'DELETE /api/products/:id/images/:publicId',
+          setPrimary: 'PATCH /api/products/:id/images/:publicId/primary',
+          getAll: 'GET /api/products/:id/images'
+        }
+      },
+      health: 'GET /health'
     }
   });
 });
 
-// Health check
+// Health check endpoint with detailed status
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'UP',
-    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+  const dbState = mongoose.connection.readyState;
+  const dbStatus = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting'
+  };
+
+  res.status(200).json({
+    success: true,
+    message: 'Server is healthy',
     timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    database: {
+      status: dbStatus[dbState] || 'unknown',
+      state: dbState,
+      name: mongoose.connection.name,
+      host: mongoose.connection.host
+    },
+    memory: process.memoryUsage(),
     services: {
       auth: '✅',
-      products: '✅'
+      products: '✅',
+      images: '✅'
     }
   });
 });
 
-// 404 handler
-// 
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('❌ Error:', err.stack);
-  
-  const statusCode = err.statusCode || 500;
-  const message = err.message || 'Internal server error';
-  
-  res.status(statusCode).json({
-    success: false,
-    message: message,
-    error: process.env.NODE_ENV === 'development' ? err.stack : undefined
+// API test route (for development)
+if (process.env.NODE_ENV === 'development') {
+  app.get('/api/test', (req, res) => {
+    sendResponse(res, 200, true, 'API is working', {
+      timestamp: new Date().toISOString(),
+      headers: req.headers,
+      query: req.query,
+      body: req.body
+    });
   });
-});
+}
+
+// 404 handler for undefined routes
+// app.use('*', (req, res) => {
+//   sendResponse(res, 404, false, `Route ${req.method} ${req.originalUrl} not found`, null, {
+//     method: req.method,
+//     path: req.originalUrl,
+//     availableEndpoints: {
+//       auth: '/api/auth',
+//       products: '/api/products',
+//       health: '/health'
+//     }
+//   });
+// });
+
+// Error handling middleware (should be last)
+app.use(errorHandler);
+
+// Graceful shutdown handler
+const gracefulShutdown = async (signal) => {
+  console.log(`\n👋 ${signal} received. Closing server gracefully...`);
+  
+  try {
+    await mongoose.connection.close(false);
+    console.log('✅ MongoDB connection closed');
+    
+    server.close(() => {
+      console.log('✅ HTTP server closed');
+      process.exit(0);
+    });
+  } catch (error) {
+    console.error('❌ Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+};
 
 // Start server when MongoDB is connected
+let server;
 mongoose.connection.once('open', () => {
   console.log('✅ Connected to MongoDB');
-  app.listen(PORT, () => {
+  
+  server = app.listen(PORT, () => {
     console.log('\n=================================');
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log('=================================');
-    console.log(`🌐 Base URL: http://localhost:${PORT}`);
-    console.log(`🔐 Auth API: http://localhost:${PORT}/api/auth`);
-    console.log(`📦 Products API: http://localhost:${PORT}/api/products`);
-    console.log(`🩺 Health Check: http://localhost:${PORT}/health`);
+   
+  
     console.log('=================================\n');
-    
-    // Log all available product routes
-    // console.log('📋 Available Product Routes:');
-    // console.log('   GET    /api/products');
-    // console.log('   GET    /api/products/:id');
-    // console.log('   POST   /api/products');
-    // console.log('   PUT    /api/products/:id');
-    // console.log('   PATCH  /api/products/:id');
-    // console.log('   DELETE /api/products/:id');
-    // console.log('   GET    /api/products/search');
-    // console.log('   POST   /api/products/advanced-search');
-    // console.log('   POST   /api/products/bulk');
-    // console.log('=================================\n');
+  });
+
+  server.on('error', (error) => {
+    console.error('❌ Server error:', error);
+    if (error.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use`);
+      process.exit(1);
+    }
   });
 });
 
-// Handle MongoDB connection errors
+// Handle MongoDB connection events
+mongoose.connection.on('connected', () => {
+  console.log('✅ MongoDB connected');
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('⚠️ MongoDB disconnected');
+});
+
 mongoose.connection.on('error', (err) => {
   console.error('❌ MongoDB connection error:', err.message);
+  if (err.message.includes('ECONNREFUSED')) {
+    console.error('⚠️ Make sure MongoDB is running');
+  }
 });
+
+// Handle process termination
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err) => {
-  console.log('❌ UNHANDLED REJECTION! Shutting down...');
-  console.log(err.name, err.message);
-  server.close(() => {
+  console.error('❌ UNHANDLED REJECTION! Shutting down...');
+  console.error('Error:', err);
+  console.error('Stack:', err.stack);
+  
+  if (server) {
+    server.close(() => {
+      console.log('HTTP server closed due to unhandled rejection');
+      process.exit(1);
+    });
+  } else {
     process.exit(1);
-  });
+  }
 });
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (err) => {
-  console.log('❌ UNCAUGHT EXCEPTION! Shutting down...');
-  console.log(err.name, err.message);
+  console.error('❌ UNCAUGHT EXCEPTION! Shutting down...');
+  console.error('Error:', err);
+  console.error('Stack:', err.stack);
   process.exit(1);
 });
+
+// Export app for testing
+module.exports = app;

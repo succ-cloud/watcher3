@@ -1,155 +1,119 @@
-// src/models/User.js - FIXED VERSION
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-// Cameroon mobile operators prefixes
-const CAMEROON_OPERATORS = {
-  MTN: ['67', '68', '65', '69', '66'],
-  ORANGE: ['69', '65', '67', '68', '66'],
-  NEXTTEL: ['66']
+// Define user roles
+const ROLES = {
+  WHOLESALER: 'wholesaler',
+  SALESMAN: 'salesman',
+  ADMIN: 'admin'
 };
 
-// Helper function to detect Cameroon operator
-function detectCameroonOperator(phoneNumber) {
-  const cleaned = phoneNumber.replace(/\D/g, '');
-  let number = cleaned;
-  
-  if (cleaned.startsWith('237')) {
-    number = cleaned.substring(3);
-  }
-  
-  const prefix = number.substring(0, 2);
-  
-  if (CAMEROON_OPERATORS.MTN.includes(prefix)) return 'MTN';
-  if (CAMEROON_OPERATORS.ORANGE.includes(prefix)) return 'ORANGE';
-  if (CAMEROON_OPERATORS.NEXTTEL.includes(prefix)) return 'NEXTTEL';
-  
-  return 'UNKNOWN';
-}
-
-// Helper function to validate Cameroon phone number
-function isValidCameroonPhone(phoneNumber) {
-  const cleaned = phoneNumber.replace(/\D/g, '');
-  
-  if (!cleaned.startsWith('237')) return false;
-  if (cleaned.length !== 12) return false;
-  
-  const operator = detectCameroonOperator(phoneNumber);
-  return operator !== 'UNKNOWN';
-}
+// Define account status
+const ACCOUNT_STATUS = {
+  PENDING: 'pending',
+  ACTIVE: 'active',
+  SUSPENDED: 'suspended',
+  REJECTED: 'rejected'
+};
 
 const userSchema = new mongoose.Schema({
-  email: {
+  name: {
     type: String,
-    required: true,
-    unique: true,
-    lowercase: true,
+    required: [true, 'Name is required'],
     trim: true,
-    match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
+    minlength: [2, 'Name must be at least 2 characters'],
+    maxlength: [50, 'Name cannot exceed 50 characters']
   },
   
-  phone: {
+  businessName: {
     type: String,
-    required: true,
+    required: [true, 'Business name is required'],
+    trim: true,
+    minlength: [2, 'Business name must be at least 2 characters'],
+    maxlength: [100, 'Business name cannot exceed 100 characters']
+  },
+  
+  businessAddress: {
+    type: String,
+    required: [true, 'Business address is required'],
+    trim: true,
+    minlength: [5, 'Business address must be at least 5 characters'],
+    maxlength: [200, 'Business address cannot exceed 200 characters']
+  },
+  
+  tel: {
+    type: String,
+    required: [true, 'Telephone number is required'],
     unique: true,
     trim: true,
     validate: {
-      validator: isValidCameroonPhone,
-      message: 'Please enter a valid Cameroon phone number (e.g., +237680123456)'
+      validator: function (v) {
+        const phoneRegex = /^(?:\+237|00237)?\d{9}$/;
+        return phoneRegex.test(v.replace(/\s/g, ''));
+      },
+      message: 'Please enter a valid 9-digit phone number (e.g., 677184257 or +237677184257)'
     }
   },
   
-  phoneOperator: {
+  whatsappNumber: {
     type: String,
-    enum: ['MTN', 'ORANGE', 'NEXTTEL'],
-    default: function() {
-      // Set default based on phone number
-      return detectCameroonOperator(this.phone);
+    required: [true, 'WhatsApp number is required'],
+    trim: true,
+    validate: {
+      validator: function (v) {
+        const phoneRegex = /^(?:\+237|00237)?\d{9}$/;
+        return phoneRegex.test(v.replace(/\s/g, ''));
+      },
+      message: 'Please enter a valid 9-digit WhatsApp number (e.g., 677184257 or +237677184257)'
     }
   },
   
   password: {
     type: String,
-    required: true,
-    minlength: 6,
-    select: false
+    required: [true, 'Password is required'],
+    minlength: [8, 'Password must be at least 8 characters'],
   },
   
-  businessName: {
+  role: {
     type: String,
-    required: true,
-    trim: true,
-    maxlength: 100
+    enum: Object.values(ROLES),
+    default: ROLES.WHOLESALER
   },
-  
-  businessAddress: {
+
+  accountStatus: {
     type: String,
-    required: true,
-    trim: true,
-    maxlength: 200
+    enum: Object.values(ACCOUNT_STATUS),
+    default: function() {
+      // If role is wholesaler, default to pending, otherwise active
+      return this.role === ROLES.WHOLESALER ? ACCOUNT_STATUS.PENDING : ACCOUNT_STATUS.ACTIVE;
+    }
+  },
+
+  refreshToken: String,
+  
+  // Track when account was validated and by whom
+  validatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
   
-  subscriptionPlan: {
-    type: String,
-    enum: ['free', 'basic', 'premium', 'enterprise'],
-    default: 'free'
+  validatedAt: {
+    type: Date
   },
   
-  isEmailVerified: { type: Boolean, default: false },
-  isPhoneVerified: { type: Boolean, default: false },
-  lastLogin: { type: Date },
-  createdAt: { type: Date, default: Date.now }
+  // Store rejection reason if any
+  rejectionReason: {
+    type: String
+  },
+  
+  // Additional notes from admin
+  adminNotes: {
+    type: String
+  }
+}, {
+  timestamps: true // Adds createdAt and updatedAt automatically
 });
 
-// Pre-save middleware to ensure phoneOperator is set
-userSchema.pre('save', function(next) {
-  // Always set phoneOperator based on phone number
-  if (this.phone) {
-    this.phoneOperator = detectCameroonOperator(this.phone);
-  }
-  
-  // Format business name
-  if (this.businessName) {
-    this.businessName = this.businessName
-      .split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
-  }
-  
-  next();
-});
-
-// Hash password before saving
-userSchema.pre('save', async function(next) {
-  // Only hash the password if it has been modified
-  if (!this.isModified('password')) return next();
-  
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Method to compare passwords
-userSchema.methods.comparePassword = async function(candidatePassword) {
-  return await bcrypt.compare(candidatePassword, this.password);
-};
-
-// Method to format phone number for display
-userSchema.methods.formatPhoneNumber = function() {
-  if (!this.phone) return '';
-  
-  const digits = this.phone.replace(/\D/g, '');
-  if (digits.startsWith('237') && digits.length === 12) {
-    const rest = digits.substring(3);
-    return `+237 ${rest.substring(0, 3)} ${rest.substring(3, 6)} ${rest.substring(6)}`;
-  }
-  return this.phone;
-};
-
-const User = mongoose.model('User', userSchema);
-
-module.exports = User;
+module.exports = mongoose.model('User', userSchema);
+module.exports.ROLES = ROLES;
+module.exports.ACCOUNT_STATUS = ACCOUNT_STATUS;

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const productController = require('../controllers/itemsController');
 const { uploadProductImages, uploadMemory } = require('../config/cloudinary');
-
+const verifyJWT = require('../middleware/verifyJWT')
 // ==================== IMAGE UPLOAD ROUTES ====================
 
 /**
@@ -57,7 +57,7 @@ router.post(
  */
 router.post(
   '/', 
-  uploadProductImages.array('images', 10),
+   uploadProductImages.array('images', 10),
   productController.createProduct
 );
 
@@ -75,7 +75,7 @@ router.put(
 // ... rest of your existing routes
 router.get('/search', productController.searchProductsByName);
 router.post('/advanced-search', productController.advancedSearch);
-router.get('/', productController.getAllProducts);
+router.get('/', verifyJWT, productController.getAllProducts);
 router.get('/:id', productController.getProductById);
 router.post('/bulk', productController.bulkCreateProducts);
 router.patch('/:id', productController.patchProduct);
