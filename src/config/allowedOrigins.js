@@ -1,7 +1,7 @@
 const allowedOrigins= 
 [
     // 'https://www.google .com', 
-        'https://wacheit.netlify.app/',
+        'https://wacheit.netlify.app',
         'http://localhost:5173',
         'https://routestest.netlify.app/',
         'http://localhost:3000'
