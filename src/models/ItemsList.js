@@ -42,11 +42,7 @@ const productSchema = new mongoose.Schema({
     trim: true
   },
   
-  carrier: {
-    type: String,
-    required: [true, 'Carrier/Network is required'],
-    trim: true
-  },
+
   
   color: {
     type: String,
@@ -55,11 +51,7 @@ const productSchema = new mongoose.Schema({
   },
   
   // Default IMEI with default value "clean"
-  IME: {
-    type: String,
-    default: 'clean',
-    trim: true
-  },
+
   
   // Images - NEW FIELD
   images: [{
