@@ -34,7 +34,7 @@ const productSchema = new mongoose.Schema({
   sim: {
     type: String,
     required: [true, 'SIM type is required'],
-    enum: ['Single SIM', 'Dual SIM', 'eSIM', 'No SIM'],
+    enum: ['Physical SIM','eSIM'],
     trim: true
   },
   
