@@ -75,7 +75,7 @@ router.put(
 // ... rest of your existing routes
 router.get('/search', productController.searchProductsByName);
 router.post('/advanced-search', productController.advancedSearch);
-router.get('/', verifyJWT, productController.getAllProducts);
+router.get('/' productController.getAllProducts);
 router.get('/:id', productController.getProductById);
 router.post('/bulk', productController.bulkCreateProducts);
 router.patch('/:id', productController.patchProduct);
