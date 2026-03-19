@@ -17,11 +17,7 @@ const productSchema = new mongoose.Schema({
   },
   
   // Product Specifications
-  models: {
-    type: String,
-    required: [true, 'Model is required'],
-    trim: true
-  },
+
   
   capacity: {
     type: String,
