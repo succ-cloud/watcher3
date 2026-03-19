@@ -16,7 +16,7 @@ const createProduct = async (req, res) => {
 
     // Validate required fields
     const requiredFields = ['product_type', 'product_name', 'models', 'capacity', 
-                           'country', 'sim', 'carrier', 'color', 'price', 'description'];
+                           'country', 'sim',  'color', 'price', 'description'];
     
     const missingFields = requiredFields.filter(field => !productData[field]);
     
