@@ -5,7 +5,7 @@ const productSchema = new mongoose.Schema({
   product_type: {
     type: String,
     required: [true, 'Product type is required'],
-    enum: ['smartphone', 'tablet', 'laptop', 'accessory', 'other'],
+    enum: ['Smartphone', 'tablet', 'laptop', 'accessory', 'other'],
     trim: true
   },
   
