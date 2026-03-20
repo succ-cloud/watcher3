@@ -15,7 +15,7 @@ const handleLogin = async (req, res) => {
     
     if (match) {
         const role = foundUser.role;
-        
+        const name = foundUser.name
         // Create JWTs
         const accessToken = jwt.sign(
             {
@@ -50,7 +50,7 @@ const handleLogin = async (req, res) => {
         console.log('Cookie set with refresh token');
         
         // Send role and access token to user
-        res.json({ role, accessToken }); // Removed refreshToken from response
+        res.json({ role, accessToken, name }); // Removed refreshToken from response
 
     } else {
         res.sendStatus(401);
