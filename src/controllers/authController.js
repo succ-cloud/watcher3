@@ -44,6 +44,8 @@ const handleLogin = async (req, res) => {
             httpOnly: true, 
             secure: true, // CHANGE TO FALSE FOR DEVELOPMENT
             sameSite: 'None'
+                maxAge: 24 * 60 * 60 * 1000 
+        });    
         console.log('Cookie set with refresh token');
         
         // Send role and access token to user
