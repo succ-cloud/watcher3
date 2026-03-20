@@ -55,7 +55,7 @@ app.use('/api/refresh', require('./src/routes/refresh'));
 // Admin routes
 app.use('/api/admin', require('./src/routes/adminRoutes'));
 // Protect product routes with JWT
-// app.use(verifyJWT);
+app.use(verifyJWT);
 app.use('/api/products', require('./src/routes/itemsRoutes'));
 
 // Root route
