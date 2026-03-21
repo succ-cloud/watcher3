@@ -18,6 +18,11 @@ const { logger } = require('./src/middleware/logEvent');
 const PORT = process.env.PORT || 5000;
 const app = express();
 
+// Parse bodies first — before any route or logger that might confuse debugging.
+// JSON routes require header: Content-Type: application/json
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
 connectDB();
 
 app.use(logger);
@@ -28,24 +33,18 @@ app.use(credentials);
 // CORS middleware
 app.use(cors(corsOptions));
 
-// Built-in middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
-// Rate limiting for API routes
-// const apiLimiter = rateLimit({
-//     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW) * 60 * 1000 || 15 * 60 * 1000,
-//     max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
-//     message: {
-//         success: false,
-//         message: 'Too many requests from this IP. Please try again later.'
-//     },
-//     standardHeaders: true,
-//     legacyHeaders: false,
-// });
+app.use((req, res, next) => {
+  console.log('\n🔍 REQUEST DEBUG:');
+  console.log('  Method:', req.method);
+  console.log('  URL:', req.url);
+  console.log('  Content-Type:', req.headers['content-type']);
+  console.log('  Body:', req.body);
+  console.log('  Raw Body?', req.headers['content-type'] === 'application/json' ? 'Should parse' : 'Not JSON');
+  next();
+});
 
-// app.use('/api', apiLimiter);
 
 // ==================== ROUTES ====================
 app.use('/api/auth', require('./src/routes/authRoutes'));
@@ -54,9 +53,14 @@ app.use('/api/logout', require('./src/routes/logOut'));
 app.use('/api/refresh', require('./src/routes/refresh'));
 // Admin routes
 app.use('/api/admin', require('./src/routes/adminRoutes'));
+
+
 // Protect product routes with JWT
-app.use(verifyJWT);
-app.use('/api/products', require('./src/routes/itemsRoutes'));
+// app.use(verifyJWT);
+app.use('/api', require('./src/routes/odersRoutes'));
+app.use('/api', require('./src/routes/itemsRoutes'));
+
+
 
 // Root route
 app.get('/', (req, res) => {
