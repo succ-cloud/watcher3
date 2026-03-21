@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const isProduction = process.env.NODE_ENV === 'production';
 
 const handleLogin = async (req, res) => {
     const { name, password } = req.body;
@@ -15,21 +16,29 @@ const handleLogin = async (req, res) => {
     
     if (match) {
         const role = foundUser.role;
-        const name = foundUser.name
+        const name = foundUser.name;
+        const userId = foundUser._id; // ← GET THE USER ID
+        const businessName = foundUser.businessName; // ← ADD BUSINESS NAME
+        const accountStatus = foundUser.accountStatus; // ← ADD ACCOUNT STATUS
+        
         // Create JWTs
         const accessToken = jwt.sign(
             {
                 "UserInfo": {
+                    "userId": userId, // ← ADD USER ID TO TOKEN
                     "name": foundUser.name,
                     "role": role
                 }
             },
             process.env.ACCESS_TOKEN_SECRET,
-            { expiresIn: '20s' }
+            { expiresIn: '20s' } // Consider increasing this to '15m' or '1h' for production
         );
         
         const refreshToken = jwt.sign(
-            { "name": foundUser.name },
+            { 
+                "userId": userId, // ← ADD USER ID TO REFRESH TOKEN
+                "name": foundUser.name 
+            },
             process.env.REFRESH_TOKEN_SECRET,
             { expiresIn: '1d' }
         );
@@ -42,14 +51,28 @@ const handleLogin = async (req, res) => {
         // Creates Secure Cookie with refresh token
         res.cookie('jwt', refreshToken, { 
             httpOnly: true, 
-            secure: true, // CHANGE TO FALSE FOR DEVELOPMENT
-            sameSite: 'None',
+            secure: isProduction,
+            sameSite: isProduction ? 'None' : 'Lax',
             maxAge: 24 * 60 * 60 * 1000 
-        });    
+        });
+
         console.log('Cookie set with refresh token');
         
-        // Send role and access token to user
-        res.json({ role, accessToken, name }); // Removed refreshToken from response
+        // Send user data to frontend including _id
+        res.json({ 
+            success: true,
+            message: 'Login successful',
+            user: {
+                _id: userId, // ← USER ID SENT TO FRONTEND
+                name: name,
+                role: role,
+                businessName: businessName,
+                accountStatus: accountStatus
+            },
+            accessToken,
+            // Optionally include other user data your frontend needs
+            // refreshToken is NOT sent to frontend for security (only in HTTP-only cookie)
+        });
 
     } else {
         res.sendStatus(401);
