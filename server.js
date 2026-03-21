@@ -57,10 +57,11 @@ app.use('/api/admin', require('./src/routes/adminRoutes'));
 
 // Protect product routes with JWT
 // app.use(verifyJWT);
+// 
 app.use('/api', require('./src/routes/odersRoutes'));
-app.use('/api', require('./src/routes/itemsRoutes'));
 
-
+// Product routes - now under /api/products to avoid conflicts
+app.use('/api/products', require('./src/routes/itemsRoutes'));
 
 // Root route
 app.get('/', (req, res) => {
@@ -79,7 +80,6 @@ app.get('/', (req, res) => {
         forgotPassword: 'POST /api/auth/forgot-password',
         resetPassword: 'POST /api/auth/reset-password'
       },
-
       products: {
         getAll: 'GET /api/products',
         getById: 'GET /api/products/:id',
@@ -97,6 +97,19 @@ app.get('/', (req, res) => {
           setPrimary: 'PATCH /api/products/:id/images/:publicId/primary',
           getAll: 'GET /api/products/:id/images'
         }
+      },
+      orders: {
+        create: 'POST /api/orders',
+        getAll: 'GET /api/orders',
+        getById: 'GET /api/orders/:id',
+        accept: 'PATCH /api/orders/:id/accept',
+        reject: 'PATCH /api/orders/:id/reject',
+        cancel: 'PATCH /api/orders/:id/cancel'
+      },
+      notifications: {
+        getAll: 'GET /api/notifications',
+        markRead: 'PATCH /api/notifications/:id/read',
+        markAllRead: 'PATCH /api/notifications/mark-all-read'
       },
       health: 'GET /health'
     }
