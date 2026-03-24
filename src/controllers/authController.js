@@ -5,77 +5,73 @@ const isProduction = process.env.NODE_ENV === 'production';
 
 const handleLogin = async (req, res) => {
     const { name, password } = req.body;
-    if (!name || !password) return res.status(400).json({ 'message': 'Username and password are required.' });
+    if (!name || !password) {
+        return res.status(400).json({ message: 'Username and password are required.' });
+    }
     
     const foundUser = await User.findOne({ name: name }).exec();
-    if (!foundUser) return res.sendStatus(401); //Unauthorized 
+    if (!foundUser) {
+        return res.status(401).json({ message: 'Invalid credentials' });
+    }
     
-    console.log(foundUser);
     const match = await bcrypt.compare(password, foundUser.password);
-    console.log(match);
     
     if (match) {
         const role = foundUser.role;
-        const name = foundUser.name;
-        const userId = foundUser._id; // ← GET THE USER ID
-        const businessName = foundUser.businessName; // ← ADD BUSINESS NAME
-        const accountStatus = foundUser.accountStatus; // ← ADD ACCOUNT STATUS
+        const userName = foundUser.name;
+        const userId = foundUser._id;
+        const businessName = foundUser.businessName;
+        const accountStatus = foundUser.accountStatus;
         
-        // Create JWTs
+        // Create JWTs - Keep the structure consistent
         const accessToken = jwt.sign(
             {
                 "UserInfo": {
-                    "userId": userId, // ← ADD USER ID TO TOKEN
-                    "name": foundUser.name,
+                    "userId": userId.toString(), // Convert ObjectId to string
+                    "name": userName,
                     "role": role
                 }
             },
             process.env.ACCESS_TOKEN_SECRET,
-            { expiresIn: '20s' } // Consider increasing this to '15m' or '1h' for production
+            { expiresIn: '1h' }
         );
         
         const refreshToken = jwt.sign(
             { 
-                "userId": userId, // ← ADD USER ID TO REFRESH TOKEN
-                "name": foundUser.name 
+                "userId": userId.toString(),
+                "name": userName 
             },
             process.env.REFRESH_TOKEN_SECRET,
-            { expiresIn: '1d' }
+            { expiresIn: '7d' } // 7 days
         );
         
-        // Saving refreshToken with current user
+        // Save refresh token
         foundUser.refreshToken = refreshToken;
-        await foundUser.save(); // Added await
-        console.log('Refresh token saved for user:', foundUser.name);
-
-        // Creates Secure Cookie with refresh token
+        await foundUser.save();
+        
+        // Set cookie with refresh token
         res.cookie('jwt', refreshToken, { 
             httpOnly: true, 
             secure: isProduction,
             sameSite: isProduction ? 'None' : 'Lax',
-            maxAge: 24 * 60 * 60 * 1000 
+            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
         });
-
-        console.log('Cookie set with refresh token');
         
-        // Send user data to frontend including _id
+        // Send response
         res.json({ 
             success: true,
             message: 'Login successful',
             user: {
-                _id: userId, // ← USER ID SENT TO FRONTEND
-                name: name,
+                _id: userId,
+                name: userName,
                 role: role,
                 businessName: businessName,
                 accountStatus: accountStatus
             },
-            accessToken,
-            // Optionally include other user data your frontend needs
-            // refreshToken is NOT sent to frontend for security (only in HTTP-only cookie)
+            accessToken
         });
-
     } else {
-        res.sendStatus(401);
+        res.status(401).json({ message: 'Invalid credentials' });
     }
 }
 
