@@ -33,6 +33,12 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
       staffMessage = `${order.productName} (x${order.quantity}) - Order #${order._id}`;
       userTitle = 'Order Accepted 🎉';
       userMessage = `Your ${order.orderType} order for ${order.productName} has been accepted! ${order.orderType === ORDER_TYPES.OFFER ? `Final price: $${order.finalPrice}` : `Total: $${order.originalTotal}`}`;
+      
+      // Add delivery information if available
+      if (order.deliveryInfo && order.deliveryInfo.estimatedDeliveryDate) {
+        const estimatedDate = new Date(order.deliveryInfo.estimatedDeliveryDate).toLocaleDateString();
+        userMessage += ` Estimated delivery: ${estimatedDate}.`;
+      }
       break;
       
     case NOTIFICATION_TYPES.ORDER_REJECTED:
@@ -47,6 +53,24 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
       staffMessage = `${order.productName} - Order #${order._id} was cancelled`;
       userTitle = 'Order Cancelled';
       userMessage = `Your ${order.orderType} order for ${order.productName} has been cancelled.`;
+      break;
+      
+    case NOTIFICATION_TYPES.DELIVERY_UPDATED:
+      staffTitle = 'Delivery Updated';
+      staffMessage = `Delivery for ${order.productName} (Order #${order._id}) updated: ${order.deliveryInfo.deliveryStatus}`;
+      userTitle = 'Delivery Update 🚚';
+      userMessage = `Your order for ${order.productName} delivery has been updated. Status: ${order.deliveryInfo.deliveryStatus}.`;
+      
+      if (order.deliveryInfo.estimatedDeliveryDate) {
+        const estimatedDate = new Date(order.deliveryInfo.estimatedDeliveryDate).toLocaleDateString();
+        userMessage += ` Estimated delivery: ${estimatedDate}.`;
+      }
+      if (order.deliveryInfo.trackingNumber) {
+        userMessage += ` Tracking number: ${order.deliveryInfo.trackingNumber}.`;
+      }
+      if (order.deliveryInfo.courierService) {
+        userMessage += ` Courier: ${order.deliveryInfo.courierService}.`;
+      }
       break;
       
     default:
@@ -67,7 +91,8 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
       metadata: {
         orderType: order.orderType,
         quantity: order.quantity,
-        productId: order.productId
+        productId: order.productId,
+        deliveryStatus: order.deliveryInfo?.deliveryStatus || null
       }
     });
   }
@@ -83,7 +108,8 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
     metadata: {
       orderType: order.orderType,
       status: order.status,
-      productId: order.productId
+      productId: order.productId,
+      deliveryInfo: order.deliveryInfo || null
     }
   });
   
@@ -106,7 +132,8 @@ async function createOrder(req, res) {
       orderType,
       quantity,
       offeredPrice,
-      userNotes
+      userNotes,
+      deliveryAddress
     } = req.body;
     
     // Validation
@@ -197,6 +224,19 @@ async function createOrder(req, res) {
       status: ORDER_STATUS.PENDING
     };
     
+    // Add delivery address if provided
+    if (deliveryAddress) {
+      orderData.deliveryInfo = {
+        deliveryAddress,
+        deliveryStatus: 'pending'
+      };
+    } else if (user.deliveryAddress) {
+      orderData.deliveryInfo = {
+        deliveryAddress: user.deliveryAddress,
+        deliveryStatus: 'pending'
+      };
+    }
+    
     if (orderType === ORDER_TYPES.OFFER) {
       orderData.offeredPrice = Number(offeredPrice);
     }
@@ -234,11 +274,22 @@ async function createOrder(req, res) {
 /**
  * PATCH /api/orders/:id/accept
  * Accept an order (salesman for buy orders, admin for offer orders)
+ * Can also set delivery information when accepting
  */
 async function acceptOrder(req, res) {
   try {
     const { id } = req.params;
-    const { handledById, finalPrice, staffNotes } = req.body;
+    const { 
+      handledById, 
+      finalPrice, 
+      staffNotes,
+      // Delivery information
+      estimatedDeliveryDate,
+      deliveryAddress,
+      trackingNumber,
+      courierService,
+      deliveryNotes
+    } = req.body;
     
     if (!handledById) {
       return res.status(400).json({
@@ -288,8 +339,29 @@ async function acceptOrder(req, res) {
       });
     }
     
-    // Accept the order
-    await order.accept(handledById, finalPrice);
+    // Prepare delivery data if provided
+    const deliveryData = {};
+    if (estimatedDeliveryDate) {
+      deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
+    }
+    if (deliveryAddress) {
+      deliveryData.deliveryAddress = deliveryAddress;
+    }
+    if (trackingNumber) {
+      deliveryData.trackingNumber = trackingNumber;
+    }
+    if (courierService) {
+      deliveryData.courierService = courierService;
+    }
+    if (deliveryNotes) {
+      deliveryData.deliveryNotes = deliveryNotes;
+    }
+    if (Object.keys(deliveryData).length > 0) {
+      deliveryData.deliveryStatus = 'processing';
+    }
+    
+    // Accept the order with delivery data
+    await order.accept(handledById, finalPrice, Object.keys(deliveryData).length > 0 ? deliveryData : null);
     
     // Update staff notes if provided
     if (staffNotes) {
@@ -463,6 +535,136 @@ async function cancelOrder(req, res) {
 }
 
 /**
+ * PATCH /api/orders/:id/delivery
+ * Update delivery information for an order (admin only)
+ */
+async function updateDeliveryInfo(req, res) {
+  try {
+    const { id } = req.params;
+    const { 
+      estimatedDeliveryDate,
+      actualDeliveryDate,
+      deliveryAddress,
+      trackingNumber,
+      courierService,
+      deliveryNotes,
+      deliveryStatus
+    } = req.body;
+    
+    // Find order
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    // Check if order is accepted or delivered
+    if (order.status !== ORDER_STATUS.ACCEPTED && order.status !== ORDER_STATUS.DELIVERED) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot update delivery for order with status: ${order.status}. Order must be accepted first.`
+      });
+    }
+    
+    // Prepare delivery data
+    const deliveryData = {};
+    if (estimatedDeliveryDate) {
+      deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
+    }
+    if (actualDeliveryDate) {
+      deliveryData.actualDeliveryDate = new Date(actualDeliveryDate);
+    }
+    if (deliveryAddress) {
+      deliveryData.deliveryAddress = deliveryAddress;
+    }
+    if (trackingNumber) {
+      deliveryData.trackingNumber = trackingNumber;
+    }
+    if (courierService) {
+      deliveryData.courierService = courierService;
+    }
+    if (deliveryNotes) {
+      deliveryData.deliveryNotes = deliveryNotes;
+    }
+    if (deliveryStatus) {
+      deliveryData.deliveryStatus = deliveryStatus;
+    }
+    
+    // Update delivery info
+    await order.updateDeliveryInfo(deliveryData);
+    
+    // Create notification for user
+    await createOrderNotification(order, NOTIFICATION_TYPES.DELIVERY_UPDATED);
+    
+    return res.json({
+      success: true,
+      message: 'Delivery information updated successfully',
+      data: {
+        orderId: order._id,
+        deliveryInfo: order.deliveryInfo,
+        status: order.status
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error updating delivery info:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update delivery information',
+      error: error.message
+    });
+  }
+}
+
+/**
+ * GET /api/orders/delivery/pending
+ * Get orders that need delivery scheduling (admin only)
+ */
+async function getPendingDeliveryOrders(req, res) {
+  try {
+    const { limit = 50, page = 1 } = req.query;
+    
+    const filter = {
+      status: ORDER_STATUS.ACCEPTED,
+      'deliveryInfo.deliveryStatus': { $in: ['pending', 'processing'] }
+    };
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const limitNum = parseInt(limit);
+    
+    const orders = await Order.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .populate('userId', 'name businessName tel deliveryAddress')
+      .populate('productId', 'product_name');
+    
+    const total = await Order.countDocuments(filter);
+    
+    return res.json({
+      success: true,
+      data: orders,
+      pagination: {
+        page: parseInt(page),
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error fetching pending delivery orders:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending delivery orders',
+      error: error.message
+    });
+  }
+}
+
+/**
  * GET /api/orders
  * Get orders with filters
  */
@@ -484,7 +686,7 @@ async function getOrders(req, res) {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNum)
-      .populate('userId', 'name businessName tel')
+      .populate('userId', 'name businessName tel deliveryAddress')
       .populate('productId', 'product_name price images');
     
     const total = await Order.countDocuments(filter);
@@ -519,7 +721,7 @@ async function getOrderById(req, res) {
     const { id } = req.params;
     
     const order = await Order.findById(id)
-      .populate('userId', 'name businessName tel email')
+      .populate('userId', 'name businessName tel email deliveryAddress')
       .populate('productId', 'product_name price images description')
       .populate('handledBy', 'name role');
     
@@ -574,7 +776,7 @@ async function getNotifications(req, res) {
     const notifications = await Notification.find(filter)
       .sort({ createdAt: -1 })
       .limit(parseInt(limit))
-      .populate('orderId', 'orderType quantity status productName originalTotal finalPrice');
+      .populate('orderId', 'orderType quantity status productName originalTotal finalPrice deliveryInfo');
     
     const unreadCount = await Notification.countDocuments({ ...filter, read: false });
     
@@ -681,5 +883,7 @@ module.exports = {
   getOrderById,
   getNotifications,
   markNotificationRead,
-  markAllNotificationsRead
+  markAllNotificationsRead,
+  updateDeliveryInfo,
+  getPendingDeliveryOrders
 };
