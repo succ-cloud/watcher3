@@ -5,9 +5,9 @@ const NOTIFICATION_TYPES = {
   ORDER_ACCEPTED: 'order_accepted',
   ORDER_REJECTED: 'order_rejected',
   ORDER_CANCELLED: 'order_cancelled',
-  ORDER_UPDATED: 'order_updated'
+  ORDER_UPDATED: 'order_updated',
+  DELIVERY_UPDATED: 'delivery_updated' // Add this
 };
-
 const NOTIFICATION_AUDIENCE = {
   SALESMAN: 'salesman',
   ADMIN: 'admin',
