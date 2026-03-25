@@ -9,7 +9,8 @@ const ORDER_STATUS = {
   PENDING: 'pending',
   ACCEPTED: 'accepted',
   REJECTED: 'rejected',
-  CANCELLED: 'cancelled'
+  CANCELLED: 'cancelled',
+  DELIVERED: 'delivered' // Add delivered status
 };
 
 const NOTIFICATION_AUDIENCE = {
@@ -133,6 +134,43 @@ const orderSchema = new mongoose.Schema({
     type: String,
     trim: true,
     maxlength: 500
+  },
+  
+  // ==================== DELIVERY INFORMATION ====================
+  deliveryInfo: {
+    estimatedDeliveryDate: {
+      type: Date,
+      default: null
+    },
+    actualDeliveryDate: {
+      type: Date,
+      default: null
+    },
+    deliveryAddress: {
+      type: String,
+      trim: true,
+      maxlength: 500
+    },
+    trackingNumber: {
+      type: String,
+      trim: true,
+      default: ''
+    },
+    courierService: {
+      type: String,
+      trim: true,
+      default: ''
+    },
+    deliveryNotes: {
+      type: String,
+      trim: true,
+      maxlength: 500
+    },
+    deliveryStatus: {
+      type: String,
+      enum: ['pending', 'processing', 'shipped', 'out_for_delivery', 'delivered', 'failed'],
+      default: 'pending'
+    }
   }
 }, {
   timestamps: true
@@ -142,6 +180,8 @@ const orderSchema = new mongoose.Schema({
 orderSchema.index({ userId: 1, status: 1 });
 orderSchema.index({ notifyAudience: 1, status: 1 });
 orderSchema.index({ createdAt: -1 });
+orderSchema.index({ 'deliveryInfo.deliveryStatus': 1 });
+orderSchema.index({ 'deliveryInfo.estimatedDeliveryDate': 1 });
 
 // Virtual for total price based on order type
 orderSchema.virtual('totalPrice').get(function() {
@@ -157,13 +197,21 @@ orderSchema.methods.isPending = function() {
 };
 
 // Method to accept order
-orderSchema.methods.accept = async function(handledById, finalPrice = null) {
+orderSchema.methods.accept = async function(handledById, finalPrice = null, deliveryData = null) {
   this.status = ORDER_STATUS.ACCEPTED;
   this.handledBy = handledById;
   this.handledAt = new Date();
   
   if (this.orderType === ORDER_TYPES.OFFER && finalPrice) {
     this.finalPrice = finalPrice;
+  }
+  
+  // Set delivery information if provided
+  if (deliveryData) {
+    this.deliveryInfo = {
+      ...this.deliveryInfo,
+      ...deliveryData
+    };
   }
   
   return this.save();
@@ -185,6 +233,28 @@ orderSchema.methods.cancel = async function() {
   return this.save();
 };
 
+// Method to update delivery information
+orderSchema.methods.updateDeliveryInfo = async function(deliveryData) {
+  this.deliveryInfo = {
+    ...this.deliveryInfo,
+    ...deliveryData
+  };
+  
+  // If delivery status is 'delivered', update order status
+  if (deliveryData.deliveryStatus === 'delivered') {
+    this.status = ORDER_STATUS.DELIVERED;
+    this.deliveryInfo.actualDeliveryDate = new Date();
+  }
+  
+  return this.save();
+};
+
+// Method to set delivery date
+orderSchema.methods.setDeliveryDate = async function(estimatedDate) {
+  this.deliveryInfo.estimatedDeliveryDate = estimatedDate;
+  return this.save();
+};
+
 // Static method to get orders by user
 orderSchema.statics.findByUser = function(userId) {
   return this.find({ userId }).sort({ createdAt: -1 });
@@ -196,6 +266,12 @@ orderSchema.statics.findPendingByAudience = function(audience) {
     notifyAudience: audience, 
     status: ORDER_STATUS.PENDING 
   }).sort({ createdAt: -1 });
+};
+
+// Static method to get orders by delivery status
+orderSchema.statics.findByDeliveryStatus = function(deliveryStatus) {
+  return this.find({ 'deliveryInfo.deliveryStatus': deliveryStatus })
+    .sort({ 'deliveryInfo.estimatedDeliveryDate': 1 });
 };
 
 module.exports = {
