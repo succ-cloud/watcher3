@@ -210,7 +210,8 @@ async function createOrder(req, res) {
       originalTotal,
       notifyAudience,
       userNotes: userNotes || '',
-      status: ORDER_STATUS.PENDING
+      status: ORDER_STATUS.PENDING,
+      whatsappNumber:user.whatsappNumber
     };
     
     // Add delivery address
