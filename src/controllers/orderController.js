@@ -34,7 +34,6 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
       userTitle = 'Order Accepted 🎉';
       userMessage = `Your ${order.orderType} order for ${order.productName} has been accepted! ${order.orderType === ORDER_TYPES.OFFER ? `Final price: $${order.finalPrice}` : `Total: $${order.originalTotal}`}`;
       
-      // Add delivery information if available
       if (order.deliveryInfo && order.deliveryInfo.estimatedDeliveryDate) {
         const estimatedDate = new Date(order.deliveryInfo.estimatedDeliveryDate).toLocaleDateString();
         userMessage += ` Estimated delivery: ${estimatedDate}.`;
@@ -80,7 +79,7 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
       userMessage = customMessage || `Your order for ${order.productName} has been updated. Current status: ${order.status}`;
   }
   
-  // Create staff notification (salesman or admin)
+  // Create staff notification
   if (order.status === ORDER_STATUS.PENDING || eventType === NOTIFICATION_TYPES.ORDER_SUBMITTED) {
     notifications.push({
       audience: order.notifyAudience,
@@ -113,48 +112,15 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
     }
   });
   
-  // Create all notifications
   await Notification.insertMany(notifications);
 }
 
 /**
- * Helper function to reduce product stock when order is accepted
- */
-async function reduceProductStock(productId, quantity, orderType) {
-  try {
-    const product = await Product.findById(productId);
-    
-    if (!product) {
-      throw new Error('Product not found');
-    }
-    
-    // Check if enough stock is available
-    if (product.stock < quantity) {
-      throw new Error(`Insufficient stock. Available: ${product.stock}, Requested: ${quantity}`);
-    }
-    
-    // Reduce stock
-    product.stock -= quantity;
-    await product.save();
-    
-    console.log(`Stock reduced for product ${productId}: ${quantity} units removed. New stock: ${product.stock}`);
-    
-    return { success: true, newStock: product.stock };
-  } catch (error) {
-    console.error('Error reducing product stock:', error);
-    throw error;
-  }
-}
-
-/**
  * POST /api/orders
- * Create a new order (buy or offer)
+ * Create a new order
  */
 async function createOrder(req, res) {
   try {
-    console.log('📝 Creating order...');
-    console.log('Request body:', req.body);
-    
     const {
       userId,
       productId,
@@ -173,7 +139,6 @@ async function createOrder(req, res) {
       });
     }
     
-    // Validate order type
     if (!Object.values(ORDER_TYPES).includes(orderType)) {
       return res.status(400).json({
         success: false,
@@ -181,7 +146,6 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check if user exists
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
@@ -190,7 +154,6 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check if product exists and get details
     const product = await Product.findById(productId);
     if (!product) {
       return res.status(404).json({
@@ -199,7 +162,6 @@ async function createOrder(req, res) {
       });
     }
     
-    // Validate quantity
     const qty = Number(quantity);
     if (!Number.isFinite(qty) || qty < 1) {
       return res.status(400).json({
@@ -208,7 +170,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check stock availability for buy orders
+    // Check stock for buy orders
     if (orderType === ORDER_TYPES.BUY && product.stock < qty) {
       return res.status(400).json({
         success: false,
@@ -217,7 +179,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // Validate offered price for offer orders
+    // Validate offer price
     if (orderType === ORDER_TYPES.OFFER) {
       const offerPrice = Number(offeredPrice);
       if (!Number.isFinite(offerPrice) || offerPrice <= 0) {
@@ -235,11 +197,9 @@ async function createOrder(req, res) {
       }
     }
     
-    // Calculate totals
     const originalTotal = product.price * qty;
     const notifyAudience = getNotifyAudience(orderType);
     
-    // Create order
     const orderData = {
       userId,
       productId,
@@ -253,7 +213,7 @@ async function createOrder(req, res) {
       status: ORDER_STATUS.PENDING
     };
     
-    // Add delivery address if provided
+    // Add delivery address
     if (deliveryAddress) {
       orderData.deliveryInfo = {
         deliveryAddress,
@@ -271,17 +231,18 @@ async function createOrder(req, res) {
     }
     
     const order = await Order.create(orderData);
-    
-    // Create in-app notifications
     await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_SUBMITTED);
+    
+    // Reduce stock for buy orders
+    if (orderType === ORDER_TYPES.BUY) {
+      product.stock -= qty;
+      await product.save();
+    }
     
     return res.status(201).json({
       success: true,
       message: 'Order created successfully',
-      data: {
-        order,
-        notificationsSent: true
-      }
+      data: { order, notificationsSent: true }
     });
     
   } catch (error) {
@@ -296,21 +257,12 @@ async function createOrder(req, res) {
 
 /**
  * PATCH /api/orders/:id/accept
- * Accept an order and reduce stock
+ * Accept an order
  */
 async function acceptOrder(req, res) {
   try {
     const { id } = req.params;
-    const { 
-      handledById, 
-      finalPrice, 
-      staffNotes,
-      estimatedDeliveryDate,
-      deliveryAddress,
-      trackingNumber,
-      courierService,
-      deliveryNotes
-    } = req.body;
+    const { handledById, finalPrice, staffNotes, estimatedDeliveryDate, deliveryAddress, trackingNumber, courierService, deliveryNotes } = req.body;
     
     if (!handledById) {
       return res.status(400).json({
@@ -319,8 +271,7 @@ async function acceptOrder(req, res) {
       });
     }
     
-    // Find order and populate user info
-    const order = await Order.findById(id).populate('userId', 'name businessName tel businessAddress');
+    const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -328,7 +279,6 @@ async function acceptOrder(req, res) {
       });
     }
     
-    // Check if order is pending
     if (order.status !== ORDER_STATUS.PENDING) {
       return res.status(400).json({
         success: false,
@@ -336,7 +286,6 @@ async function acceptOrder(req, res) {
       });
     }
     
-    // Check if staff has permission
     const staff = await User.findById(handledById);
     if (!staff) {
       return res.status(404).json({
@@ -345,7 +294,7 @@ async function acceptOrder(req, res) {
       });
     }
     
-    // Verify the staff is authorized for this order type
+    // Verify staff authorization
     if (order.orderType === ORDER_TYPES.BUY && staff.role !== 'salesman' && staff.role !== 'admin') {
       return res.status(403).json({
         success: false,
@@ -360,59 +309,28 @@ async function acceptOrder(req, res) {
       });
     }
     
-    // Prepare delivery data if provided
+    // Prepare delivery data
     const deliveryData = {};
-    if (estimatedDeliveryDate) {
-      deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
-    }
-    if (deliveryAddress) {
-      deliveryData.deliveryAddress = deliveryAddress;
-    }
-    if (trackingNumber) {
-      deliveryData.trackingNumber = trackingNumber;
-    }
-    if (courierService) {
-      deliveryData.courierService = courierService;
-    }
-    if (deliveryNotes) {
-      deliveryData.deliveryNotes = deliveryNotes;
-    }
-    if (Object.keys(deliveryData).length > 0) {
-      deliveryData.deliveryStatus = 'processing';
-    }
+    if (estimatedDeliveryDate) deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
+    if (deliveryAddress) deliveryData.deliveryAddress = deliveryAddress;
+    if (trackingNumber) deliveryData.trackingNumber = trackingNumber;
+    if (courierService) deliveryData.courierService = courierService;
+    if (deliveryNotes) deliveryData.deliveryNotes = deliveryNotes;
+    if (Object.keys(deliveryData).length > 0) deliveryData.deliveryStatus = 'processing';
     
-    // Reduce stock BEFORE accepting the order
-    let stockUpdateResult;
-    try {
-      stockUpdateResult = await reduceProductStock(order.productId, order.quantity, order.orderType);
-      console.log('Stock reduced successfully:', stockUpdateResult);
-    } catch (stockError) {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot accept order: ${stockError.message}`,
-        stockError: stockError.message
-      });
-    }
-    
-    // Accept the order with delivery data
     await order.accept(handledById, finalPrice, Object.keys(deliveryData).length > 0 ? deliveryData : null);
     
-    // Update staff notes if provided
     if (staffNotes) {
       order.staffNotes = staffNotes;
       await order.save();
     }
     
-    // Create in-app notifications
     await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_ACCEPTED);
     
     return res.json({
       success: true,
       message: 'Order accepted successfully',
-      data: {
-        order,
-        stockUpdate: stockUpdateResult
-      }
+      data: order
     });
     
   } catch (error) {
@@ -434,22 +352,14 @@ async function rejectOrder(req, res) {
     const { id } = req.params;
     const { handledById, rejectionReason, staffNotes } = req.body;
     
-    if (!handledById) {
+    if (!handledById || !rejectionReason) {
       return res.status(400).json({
         success: false,
-        message: 'handledById is required'
+        message: 'handledById and rejectionReason are required'
       });
     }
     
-    if (!rejectionReason) {
-      return res.status(400).json({
-        success: false,
-        message: 'Rejection reason is required'
-      });
-    }
-    
-    // Find order and populate user info
-    const order = await Order.findById(id).populate('userId', 'name businessName tel');
+    const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -457,7 +367,6 @@ async function rejectOrder(req, res) {
       });
     }
     
-    // Check if order is pending
     if (order.status !== ORDER_STATUS.PENDING) {
       return res.status(400).json({
         success: false,
@@ -465,16 +374,13 @@ async function rejectOrder(req, res) {
       });
     }
     
-    // Reject the order
     await order.reject(handledById, rejectionReason);
     
-    // Update staff notes if provided
     if (staffNotes) {
       order.staffNotes = staffNotes;
       await order.save();
     }
     
-    // Create in-app notifications
     await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_REJECTED);
     
     return res.json({
@@ -495,7 +401,7 @@ async function rejectOrder(req, res) {
 
 /**
  * PATCH /api/orders/:id/cancel
- * Cancel an order (by user)
+ * Cancel an order
  */
 async function cancelOrder(req, res) {
   try {
@@ -509,7 +415,6 @@ async function cancelOrder(req, res) {
       });
     }
     
-    // Find order
     const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({
@@ -518,7 +423,6 @@ async function cancelOrder(req, res) {
       });
     }
     
-    // Verify the user owns this order
     if (order.userId.toString() !== userId) {
       return res.status(403).json({
         success: false,
@@ -526,7 +430,6 @@ async function cancelOrder(req, res) {
       });
     }
     
-    // Check if order can be cancelled
     if (order.status !== ORDER_STATUS.PENDING) {
       return res.status(400).json({
         success: false,
@@ -534,20 +437,23 @@ async function cancelOrder(req, res) {
       });
     }
     
-    // Cancel the order
     await order.cancel();
     
-    // Add cancellation reason to notes
     if (reason) {
       order.userNotes = reason;
       await order.save();
     }
     
-    // Create in-app notifications
     await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_CANCELLED);
     
-    // Note: Stock is only reduced when order is ACCEPTED, not when created
-    // So no need to restore stock here since it hasn't been reduced yet
+    // Restore stock for cancelled buy orders
+    if (order.orderType === ORDER_TYPES.BUY) {
+      const product = await Product.findById(order.productId);
+      if (product) {
+        product.stock += order.quantity;
+        await product.save();
+      }
+    }
     
     return res.json({
       success: true,
@@ -567,23 +473,14 @@ async function cancelOrder(req, res) {
 
 /**
  * PATCH /api/orders/:id/delivery
- * Update delivery information for an order
+ * Update delivery information
  */
 async function updateDeliveryInfo(req, res) {
   try {
     const { id } = req.params;
-    const { 
-      estimatedDeliveryDate,
-      actualDeliveryDate,
-      deliveryAddress,
-      trackingNumber,
-      courierService,
-      deliveryNotes,
-      deliveryStatus
-    } = req.body;
+    const { estimatedDeliveryDate, actualDeliveryDate, deliveryAddress, trackingNumber, courierService, deliveryNotes, deliveryStatus } = req.body;
     
-    // Find order and populate user info
-    const order = await Order.findById(id).populate('userId', 'name businessName tel');
+    const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -591,7 +488,6 @@ async function updateDeliveryInfo(req, res) {
       });
     }
     
-    // Check if order is accepted or delivered
     if (order.status !== ORDER_STATUS.ACCEPTED && order.status !== ORDER_STATUS.DELIVERED) {
       return res.status(400).json({
         success: false,
@@ -599,44 +495,22 @@ async function updateDeliveryInfo(req, res) {
       });
     }
     
-    // Prepare delivery data
     const deliveryData = {};
-    if (estimatedDeliveryDate) {
-      deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
-    }
-    if (actualDeliveryDate) {
-      deliveryData.actualDeliveryDate = new Date(actualDeliveryDate);
-    }
-    if (deliveryAddress) {
-      deliveryData.deliveryAddress = deliveryAddress;
-    }
-    if (trackingNumber) {
-      deliveryData.trackingNumber = trackingNumber;
-    }
-    if (courierService) {
-      deliveryData.courierService = courierService;
-    }
-    if (deliveryNotes) {
-      deliveryData.deliveryNotes = deliveryNotes;
-    }
-    if (deliveryStatus) {
-      deliveryData.deliveryStatus = deliveryStatus;
-    }
+    if (estimatedDeliveryDate) deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
+    if (actualDeliveryDate) deliveryData.actualDeliveryDate = new Date(actualDeliveryDate);
+    if (deliveryAddress) deliveryData.deliveryAddress = deliveryAddress;
+    if (trackingNumber) deliveryData.trackingNumber = trackingNumber;
+    if (courierService) deliveryData.courierService = courierService;
+    if (deliveryNotes) deliveryData.deliveryNotes = deliveryNotes;
+    if (deliveryStatus) deliveryData.deliveryStatus = deliveryStatus;
     
-    // Update delivery info
     await order.updateDeliveryInfo(deliveryData);
-    
-    // Create in-app notification for user
     await createOrderNotification(order, NOTIFICATION_TYPES.DELIVERY_UPDATED);
     
     return res.json({
       success: true,
       message: 'Delivery information updated successfully',
-      data: {
-        orderId: order._id,
-        deliveryInfo: order.deliveryInfo,
-        status: order.status
-      }
+      data: { orderId: order._id, deliveryInfo: order.deliveryInfo, status: order.status }
     });
     
   } catch (error) {
@@ -650,92 +524,8 @@ async function updateDeliveryInfo(req, res) {
 }
 
 /**
- * GET /api/orders
- * Get orders with filters
- */
-async function getOrders(req, res) {
-  try {
-    const { userId, status, orderType, notifyAudience, limit = 50, page = 1 } = req.query;
-    
-    const filter = {};
-    
-    if (userId) filter.userId = userId;
-    if (status) filter.status = status;
-    if (orderType) filter.orderType = orderType;
-    if (notifyAudience) filter.notifyAudience = notifyAudience;
-    
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const limitNum = parseInt(limit);
-    
-    const orders = await Order.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .populate('userId', 'name businessName tel deliveryAddress')
-      .populate('productId', 'product_name price images')
-      .populate('handledBy', 'name role');
-    
-    const total = await Order.countDocuments(filter);
-    
-    return res.json({
-      success: true,
-      data: orders,
-      pagination: {
-        page: parseInt(page),
-        limit: limitNum,
-        total,
-        pages: Math.ceil(total / limitNum)
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error getting orders:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to get orders',
-      error: error.message
-    });
-  }
-}
-
-/**
- * GET /api/orders/:id
- * Get a single order by ID
- */
-async function getOrderById(req, res) {
-  try {
-    const { id } = req.params;
-    
-    const order = await Order.findById(id)
-      .populate('userId', 'name businessName tel email deliveryAddress')
-      .populate('productId', 'product_name price images description')
-      .populate('handledBy', 'name role');
-    
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-    
-    return res.json({
-      success: true,
-      data: order
-    });
-    
-  } catch (error) {
-    console.error('Error getting order:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to get order',
-      error: error.message
-    });
-  }
-}
-
-/**
  * GET /api/orders/delivery/pending
- * Get orders that need delivery scheduling
+ * Get orders pending delivery
  */
 async function getPendingDeliveryOrders(req, res) {
   try {
@@ -781,18 +571,16 @@ async function getPendingDeliveryOrders(req, res) {
 
 /**
  * GET /api/orders/stock/low
- * Get orders that are causing low stock alerts
+ * Get low stock alerts
  */
 async function getLowStockOrders(req, res) {
   try {
     const threshold = parseInt(req.query.threshold) || 10;
     
-    // Find products with low stock
     const lowStockProducts = await Product.find({
       stock: { $lte: threshold }
     }).select('_id product_name stock');
     
-    // Find pending orders for these products
     const productIds = lowStockProducts.map(p => p._id);
     
     const pendingOrders = await Order.find({
@@ -820,6 +608,217 @@ async function getLowStockOrders(req, res) {
   }
 }
 
+/**
+ * GET /api/orders
+ * Get orders with filters
+ */
+async function getOrders(req, res) {
+  try {
+    const { userId, status, orderType, notifyAudience, limit = 50, page = 1 } = req.query;
+    
+    const filter = {};
+    if (userId) filter.userId = userId;
+    if (status) filter.status = status;
+    if (orderType) filter.orderType = orderType;
+    if (notifyAudience) filter.notifyAudience = notifyAudience;
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const limitNum = parseInt(limit);
+    
+    const orders = await Order.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .populate('userId', 'name businessName tel deliveryAddress')
+      .populate('productId', 'product_name price images')
+      .populate('handledBy', 'name role');
+    
+    const total = await Order.countDocuments(filter);
+    
+    return res.json({
+      success: true,
+      data: orders,
+      pagination: {
+        page: parseInt(page),
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error getting orders:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get orders',
+      error: error.message
+    });
+  }
+}
+
+/**
+ * GET /api/orders/:id
+ * Get a single order
+ */
+async function getOrderById(req, res) {
+  try {
+    const { id } = req.params;
+    
+    const order = await Order.findById(id)
+      .populate('userId', 'name businessName tel email deliveryAddress')
+      .populate('productId', 'product_name price images description')
+      .populate('handledBy', 'name role');
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    return res.json({
+      success: true,
+      data: order
+    });
+    
+  } catch (error) {
+    console.error('Error getting order:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get order',
+      error: error.message
+    });
+  }
+}
+
+/**
+ * GET /api/notifications
+ * Get notifications
+ */
+async function getNotifications(req, res) {
+  try {
+    const { userId, audience, limit = 50, unreadOnly = false } = req.query;
+    
+    let filter = {};
+    
+    if (userId) {
+      filter.userId = userId;
+      filter.audience = NOTIFICATION_AUDIENCE.USER;
+    } else if (audience) {
+      filter.audience = audience;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Either userId or audience is required'
+      });
+    }
+    
+    if (unreadOnly === 'true') {
+      filter.read = false;
+    }
+    
+    const notifications = await Notification.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .populate('orderId', 'orderType quantity status productName originalTotal finalPrice deliveryInfo');
+    
+    const unreadCount = await Notification.countDocuments({ ...filter, read: false });
+    
+    return res.json({
+      success: true,
+      data: notifications,
+      unreadCount,
+      count: notifications.length
+    });
+    
+  } catch (error) {
+    console.error('Error getting notifications:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get notifications',
+      error: error.message
+    });
+  }
+}
+
+/**
+ * PATCH /api/notifications/:id/read
+ * Mark notification as read
+ */
+async function markNotificationRead(req, res) {
+  try {
+    const { id } = req.params;
+    
+    const notification = await Notification.findById(id);
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+    
+    await notification.markAsRead();
+    
+    return res.json({
+      success: true,
+      message: 'Notification marked as read',
+      data: notification
+    });
+    
+  } catch (error) {
+    console.error('Error marking notification as read:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to mark notification as read',
+      error: error.message
+    });
+  }
+}
+
+/**
+ * PATCH /api/notifications/mark-all-read
+ * Mark all notifications as read
+ */
+async function markAllNotificationsRead(req, res) {
+  try {
+    const { userId, audience } = req.body;
+    
+    let filter = { read: false };
+    
+    if (userId) {
+      filter.userId = userId;
+      filter.audience = NOTIFICATION_AUDIENCE.USER;
+    } else if (audience) {
+      filter.audience = audience;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Either userId or audience is required'
+      });
+    }
+    
+    const result = await Notification.updateMany(
+      filter,
+      { read: true, readAt: new Date() }
+    );
+    
+    return res.json({
+      success: true,
+      message: `${result.modifiedCount} notifications marked as read`,
+      modifiedCount: result.modifiedCount
+    });
+    
+  } catch (error) {
+    console.error('Error marking all notifications as read:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to mark notifications as read',
+      error: error.message
+    });
+  }
+}
+
+// EXPORT ALL FUNCTIONS
 module.exports = {
   createOrder,
   acceptOrder,
@@ -827,6 +826,9 @@ module.exports = {
   cancelOrder,
   getOrders,
   getOrderById,
+  getNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
   updateDeliveryInfo,
   getPendingDeliveryOrders,
   getLowStockOrders
