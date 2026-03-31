@@ -259,10 +259,23 @@ async function createOrder(req, res) {
  * PATCH /api/orders/:id/accept
  * Accept an order
  */
-async function acceptOrder(req, res) {
+/**
+ * PATCH /api/orders/:id/accept
+ * Accept an order and reduce stock
+ */
+ async function acceptOrder(req, res) {
   try {
     const { id } = req.params;
-    const { handledById, finalPrice, staffNotes, estimatedDeliveryDate, deliveryAddress, trackingNumber, courierService, deliveryNotes } = req.body;
+    const { 
+      handledById, 
+      finalPrice, 
+      staffNotes,
+      estimatedDeliveryDate,
+      deliveryAddress,
+      trackingNumber,
+      courierService,
+      deliveryNotes
+    } = req.body;
     
     if (!handledById) {
       return res.status(400).json({
@@ -271,6 +284,7 @@ async function acceptOrder(req, res) {
       });
     }
     
+    // Find order and populate product details
     const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({
@@ -279,6 +293,7 @@ async function acceptOrder(req, res) {
       });
     }
     
+    // Check if order is pending
     if (order.status !== ORDER_STATUS.PENDING) {
       return res.status(400).json({
         success: false,
@@ -286,6 +301,7 @@ async function acceptOrder(req, res) {
       });
     }
     
+    // Check if staff has permission
     const staff = await User.findById(handledById);
     if (!staff) {
       return res.status(404).json({
@@ -294,7 +310,7 @@ async function acceptOrder(req, res) {
       });
     }
     
-    // Verify staff authorization
+    // Verify the staff is authorized for this order type
     if (order.orderType === ORDER_TYPES.BUY && staff.role !== 'salesman' && staff.role !== 'admin') {
       return res.status(403).json({
         success: false,
@@ -309,28 +325,81 @@ async function acceptOrder(req, res) {
       });
     }
     
-    // Prepare delivery data
-    const deliveryData = {};
-    if (estimatedDeliveryDate) deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
-    if (deliveryAddress) deliveryData.deliveryAddress = deliveryAddress;
-    if (trackingNumber) deliveryData.trackingNumber = trackingNumber;
-    if (courierService) deliveryData.courierService = courierService;
-    if (deliveryNotes) deliveryData.deliveryNotes = deliveryNotes;
-    if (Object.keys(deliveryData).length > 0) deliveryData.deliveryStatus = 'processing';
+    // ========== STOCK DEDUCTION ==========
+    // Get the product
+    const product = await Product.findById(order.productId);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
     
+    // Check if enough stock is available
+    if (product.stock < order.quantity) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient stock. Available: ${product.stock}, Required: ${order.quantity}`,
+        availableStock: product.stock,
+        requiredQuantity: order.quantity
+      });
+    }
+    
+    // Deduct the stock
+    product.stock -= order.quantity;
+    await product.save();
+    
+    console.log(`✅ Stock deducted for product ${product.product_name}:`);
+    console.log(`   - Order ID: ${order._id}`);
+    console.log(`   - Quantity deducted: ${order.quantity}`);
+    console.log(`   - Remaining stock: ${product.stock}`);
+    // ========== END STOCK DEDUCTION ==========
+    
+    // Prepare delivery data if provided
+    const deliveryData = {};
+    if (estimatedDeliveryDate) {
+      deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
+    }
+    if (deliveryAddress) {
+      deliveryData.deliveryAddress = deliveryAddress;
+    }
+    if (trackingNumber) {
+      deliveryData.trackingNumber = trackingNumber;
+    }
+    if (courierService) {
+      deliveryData.courierService = courierService;
+    }
+    if (deliveryNotes) {
+      deliveryData.deliveryNotes = deliveryNotes;
+    }
+    if (Object.keys(deliveryData).length > 0) {
+      deliveryData.deliveryStatus = 'processing';
+    }
+    
+    // Accept the order with delivery data
     await order.accept(handledById, finalPrice, Object.keys(deliveryData).length > 0 ? deliveryData : null);
     
+    // Update staff notes if provided
     if (staffNotes) {
       order.staffNotes = staffNotes;
       await order.save();
     }
     
+    // Create in-app notifications
     await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_ACCEPTED);
     
     return res.json({
       success: true,
       message: 'Order accepted successfully',
-      data: order
+      data: {
+        order,
+        stockUpdate: {
+          productId: product._id,
+          productName: product.product_name,
+          quantityDeducted: order.quantity,
+          remainingStock: product.stock
+        }
+      }
     });
     
   } catch (error) {
