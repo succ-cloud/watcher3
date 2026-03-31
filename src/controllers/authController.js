@@ -66,7 +66,8 @@ const handleLogin = async (req, res) => {
                 name: userName,
                 role: role,
                 businessName: businessName,
-                accountStatus: accountStatus
+                accountStatus: accountStatus,
+                whatsappNumber: whatsappNumber
             },
             accessToken
         });
