@@ -121,6 +121,9 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
  */
 async function createOrder(req, res) {
   try {
+    console.log('📝 Creating order...');
+    console.log('Request body:', req.body);
+    
     const {
       userId,
       productId,
@@ -139,6 +142,7 @@ async function createOrder(req, res) {
       });
     }
     
+    // Validate order type
     if (!Object.values(ORDER_TYPES).includes(orderType)) {
       return res.status(400).json({
         success: false,
@@ -146,7 +150,8 @@ async function createOrder(req, res) {
       });
     }
     
-    const user = await User.findById(userId);
+    // Check if user exists and get WhatsApp number
+    const user = await User.findById(userId).select('name businessName tel whatsappNumber businessAddress');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -154,6 +159,7 @@ async function createOrder(req, res) {
       });
     }
     
+    // Check if product exists and get details
     const product = await Product.findById(productId);
     if (!product) {
       return res.status(404).json({
@@ -162,6 +168,7 @@ async function createOrder(req, res) {
       });
     }
     
+    // Validate quantity
     const qty = Number(quantity);
     if (!Number.isFinite(qty) || qty < 1) {
       return res.status(400).json({
@@ -170,7 +177,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check stock for buy orders
+    // Check stock availability for buy orders
     if (orderType === ORDER_TYPES.BUY && product.stock < qty) {
       return res.status(400).json({
         success: false,
@@ -179,7 +186,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // Validate offer price
+    // Validate offered price for offer orders
     if (orderType === ORDER_TYPES.OFFER) {
       const offerPrice = Number(offeredPrice);
       if (!Number.isFinite(offerPrice) || offerPrice <= 0) {
@@ -197,9 +204,11 @@ async function createOrder(req, res) {
       }
     }
     
+    // Calculate totals
     const originalTotal = product.price * qty;
     const notifyAudience = getNotifyAudience(orderType);
     
+    // Create order
     const orderData = {
       userId,
       productId,
@@ -210,11 +219,10 @@ async function createOrder(req, res) {
       originalTotal,
       notifyAudience,
       userNotes: userNotes || '',
-      status: ORDER_STATUS.PENDING,
-      whatsappNumber:user.whatsappNumber
+      status: ORDER_STATUS.PENDING
     };
     
-    // Add delivery address
+    // Add delivery address if provided
     if (deliveryAddress) {
       orderData.deliveryInfo = {
         deliveryAddress,
@@ -232,9 +240,11 @@ async function createOrder(req, res) {
     }
     
     const order = await Order.create(orderData);
+    
+    // Create in-app notifications
     await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_SUBMITTED);
     
-    // Reduce stock for buy orders
+    // If buy order, reduce stock
     if (orderType === ORDER_TYPES.BUY) {
       product.stock -= qty;
       await product.save();
@@ -243,7 +253,18 @@ async function createOrder(req, res) {
     return res.status(201).json({
       success: true,
       message: 'Order created successfully',
-      data: { order, notificationsSent: true }
+      data: {
+        order,
+        user: {
+          id: user._id,
+          name: user.name,
+          businessName: user.businessName,
+          tel: user.tel,
+          whatsappNumber: user.whatsappNumber,
+          businessAddress: user.businessAddress
+        },
+        notificationsSent: true
+      }
     });
     
   } catch (error) {
@@ -258,13 +279,9 @@ async function createOrder(req, res) {
 
 /**
  * PATCH /api/orders/:id/accept
- * Accept an order
- */
-/**
- * PATCH /api/orders/:id/accept
  * Accept an order and reduce stock
  */
- async function acceptOrder(req, res) {
+async function acceptOrder(req, res) {
   try {
     const { id } = req.params;
     const { 
@@ -285,8 +302,8 @@ async function createOrder(req, res) {
       });
     }
     
-    // Find order and populate product details
-    const order = await Order.findById(id);
+    // Find order and populate user info
+    const order = await Order.findById(id).populate('userId', 'name businessName tel whatsappNumber businessAddress');
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -326,8 +343,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // ========== STOCK DEDUCTION ==========
-    // Get the product
+    // STOCK DEDUCTION
     const product = await Product.findById(order.productId);
     if (!product) {
       return res.status(404).json({
@@ -354,7 +370,6 @@ async function createOrder(req, res) {
     console.log(`   - Order ID: ${order._id}`);
     console.log(`   - Quantity deducted: ${order.quantity}`);
     console.log(`   - Remaining stock: ${product.stock}`);
-    // ========== END STOCK DEDUCTION ==========
     
     // Prepare delivery data if provided
     const deliveryData = {};
@@ -394,6 +409,19 @@ async function createOrder(req, res) {
       message: 'Order accepted successfully',
       data: {
         order,
+        user: {
+          id: order.userId._id,
+          name: order.userId.name,
+          businessName: order.userId.businessName,
+          tel: order.userId.tel,
+          whatsappNumber: order.userId.whatsappNumber,
+          businessAddress: order.userId.businessAddress
+        },
+        staff: {
+          id: staff._id,
+          name: staff.name,
+          role: staff.role
+        },
         stockUpdate: {
           productId: product._id,
           productName: product.product_name,
