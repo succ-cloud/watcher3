@@ -22,6 +22,7 @@ const handleLogin = async (req, res) => {
         const userId = foundUser._id;
         const businessName = foundUser.businessName;
         const accountStatus = foundUser.accountStatus;
+        const whatsappNumber = foundUser.whatsappNumber;
         
         // Create JWTs - Keep the structure consistent
         const accessToken = jwt.sign(
