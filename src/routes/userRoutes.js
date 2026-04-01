@@ -5,48 +5,10 @@ const verifyJWT = require('../middleware/verifyJWT');
 const ROLES_LIST = require('../config/role_list');
 const verifyRole = require('../middleware/verifyRole');
 
-/** 
- * Allow admin, wholesaler, or the authenticated user fetching their own document.
- * Updated to allow both ADMIN and WHOLESALER roles to view user details
- */
-const allowSelfOrAdminOrWholesaler = (req, res, next) => {
-    const requestedId = String(req.params.id || '');
-    const selfId = String(req.userId || req.user?.userId || '');
-    const role = String(req.role || req.user?.role || '').toLowerCase();
-    
-    console.log(`🔍 Access Check - Role: ${role}, Requested ID: ${requestedId}, Self ID: ${selfId}`);
-    
-    // Allow ADMIN to access any user
-    if (role === ROLES_LIST.ADMIN) {
-        console.log('✅ Admin access granted');
-        return next();
-    }
-    
-    // Allow WHOLESALER to access any user (for viewing salesmen, etc.)
-    if (role === ROLES_LIST.WHOLESALER) {
-        console.log('✅ Wholesaler access granted');
-        return next();
-    }
-    
-    // Allow user to access their own profile
-    if (selfId && requestedId && selfId === requestedId) {
-        console.log('✅ Self access granted');
-        return next();
-    }
-    
-    console.log('❌ Access denied');
-    return res.status(403).json({
-        success: false,
-        message: 'You do not have permission to view this user profile.',
-        allowedRoles: ['admin', 'wholesaler'],
-        yourRole: role
-    });
-};
-
 // Debug middleware to log incoming requests (optional)
 router.use((req, res, next) => {
     console.log(`\n📡 User Route: ${req.method} ${req.originalUrl}`);
-    console.log(`👤 User Role: ${req.role || req.user?.role}`);
+    console.log(`👤 User Role: ${req.role}`);
     next();
 });
 
@@ -68,10 +30,10 @@ router.get('/wholesalers',
 /**
  * @route   GET /api/users/salesmen
  * @desc    Get all salesmen with filters
- * @access  Admin and Wholesaler (wholesalers can view their salesmen)
+ * @access  Admin only
  */
 router.get('/salesmen', 
-    verifyRole([ROLES_LIST.ADMIN, ROLES_LIST.WHOLESALER]), 
+    verifyRole(ROLES_LIST.ADMIN), 
     userController.getAllSalesmen
 );
 
@@ -98,16 +60,12 @@ router.get('/stats',
 /**
  * @route   GET /api/users/:id
  * @desc    Get single user by ID
- * @access  Admin, Wholesaler, or the same user (own profile)
+ * @access  Admin only (or users could access their own profile - modify as needed)
  */
-router.get('/:id', allowSelfOrAdminOrWholesaler, userController.getUserById);
-
-/**
- * @route   PATCH /api/users/:id
- * @desc    Update user profile (name, business fields, tel, whatsApp)
- * @access  Admin, Wholesaler (for their salesmen), or own profile
- */
-router.patch('/:id', allowSelfOrAdminOrWholesaler, userController.updateUserProfile);
+router.get('/:id', 
+      verifyRole([ROLES_LIST.ADMIN, ROLES_LIST.WHOLESALER]),  
+    userController.getUserById
+);
 
 /**
  * @route   PATCH /api/users/:id/status
@@ -128,43 +86,6 @@ router.patch('/:id/status',
 router.delete('/:id', 
     verifyRole(ROLES_LIST.ADMIN), 
     userController.deleteUser
-);
-
-// ==================== WHOLESALER-SPECIFIC ROUTES ====================
-
-/**
- * @route   GET /api/users/my-salesmen
- * @desc    Get salesmen associated with the logged-in wholesaler
- * @access  Wholesaler only
- */
-router.get('/my-salesmen', 
-    verifyRole(ROLES_LIST.WHOLESALER), 
-    async (req, res) => {
-        try {
-            const wholesalerId = req.userId || req.user?._id;
-            const salesmen = await userController.getSalesmenByWholesaler(wholesalerId);
-            res.json({
-                success: true,
-                data: salesmen
-            });
-        } catch (error) {
-            res.status(500).json({
-                success: false,
-                message: 'Failed to fetch salesmen',
-                error: error.message
-            });
-        }
-    }
-);
-
-/**
- * @route   POST /api/users/create-salesman
- * @desc    Create a salesman under the logged-in wholesaler
- * @access  Wholesaler only
- */
-router.post('/create-salesman', 
-    verifyRole(ROLES_LIST.WHOLESALER), 
-    userController.createSalesmanByWholesaler
 );
 
 // ==================== ADDITIONAL ROUTES (Optional) ====================
