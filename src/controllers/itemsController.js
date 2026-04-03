@@ -14,9 +14,9 @@ const createProduct = async (req, res) => {
       productData = JSON.parse(productData);
     }
 
-    // Validate required fields - ADDED brand and phoneLocation
-    const requiredFields = ['product_type', 'product_name', 'brand', 'phoneLocation', 'capacity', 
-                           'country', 'sim', 'color', 'price', 'description'];
+    // Validate required fields
+    const requiredFields = ['product_type', 'product_name', 'capacity', 
+                           'country', 'sim',  'color', 'price', 'description'];
     
     const missingFields = requiredFields.filter(field => !productData[field]);
     
@@ -74,11 +74,10 @@ const getAllProducts = async (req, res) => {
       sortBy = 'createdAt',
       sortOrder = 'desc',
       product_type,
-      brand, // ADDED brand filter
-      phoneLocation, // ADDED phoneLocation filter
       minPrice,
       maxPrice,
       country,
+      carrier,
       color,
       inStock
     } = req.query;
@@ -87,9 +86,8 @@ const getAllProducts = async (req, res) => {
     const filter = {};
 
     if (product_type) filter.product_type = product_type;
-    if (brand) filter.brand = brand; // ADDED brand filter
-    if (phoneLocation) filter.phoneLocation = phoneLocation; // ADDED phoneLocation filter
     if (country) filter.country = country;
+    if (carrier) filter.carrier = carrier;
     if (color) filter.color = color;
     
     // Price range filter
@@ -209,7 +207,7 @@ const updateProduct = async (req, res) => {
       });
     }
 
-    // Update fields (this will include brand and phoneLocation if provided)
+    // Update fields
     Object.keys(updates).forEach(key => {
       product[key] = updates[key];
     });
@@ -271,7 +269,7 @@ const patchProduct = async (req, res) => {
     if (updates.price) updates.price = parseFloat(updates.price);
     if (updates.stock) updates.stock = parseInt(updates.stock);
 
-    // Find and update product (partial update) - this will include brand and phoneLocation if provided
+    // Find and update product (partial update)
     const product = await Product.findByIdAndUpdate(
       req.params.id,
       { $set: updates },
@@ -390,14 +388,15 @@ const searchProductsByName = async (req, res) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    // Search products by name (case-insensitive) - ADDED brand to search
+    // Search products by name (case-insensitive)
     const searchRegex = new RegExp(q, 'i');
     
     const products = await Product.find({
       $or: [
         { product_name: searchRegex },
         { description: searchRegex },
-        { brand: searchRegex } // ADDED brand search
+        { models: searchRegex },
+        { carrier: searchRegex }
       ]
     })
     .sort(sort)
@@ -409,7 +408,8 @@ const searchProductsByName = async (req, res) => {
       $or: [
         { product_name: searchRegex },
         { description: searchRegex },
-        { brand: searchRegex } // ADDED brand search
+        { models: searchRegex },
+        { carrier: searchRegex }
       ]
     });
 
@@ -442,11 +442,10 @@ const advancedSearch = async (req, res) => {
     const {
       searchTerm,
       product_type,
-      brand, // ADDED brand filter
-      phoneLocation, // ADDED phoneLocation filter
       minPrice,
       maxPrice,
       country,
+      carrier,
       color,
       inStock,
       page = 1,
@@ -458,22 +457,22 @@ const advancedSearch = async (req, res) => {
     // Build search filter
     const filter = {};
 
-    // Text search across multiple fields - ADDED brand
+    // Text search across multiple fields
     if (searchTerm) {
       const searchRegex = new RegExp(searchTerm, 'i');
       filter.$or = [
         { product_name: searchRegex },
         { description: searchRegex },
-        { brand: searchRegex }, // ADDED brand search
+        { models: searchRegex },
+        { carrier: searchRegex },
         { color: searchRegex }
       ];
     }
 
-    // Apply filters - ADDED brand and phoneLocation
+    // Apply filters
     if (product_type) filter.product_type = product_type;
-    if (brand) filter.brand = brand; // ADDED brand filter
-    if (phoneLocation) filter.phoneLocation = phoneLocation; // ADDED phoneLocation filter
     if (country) filter.country = country;
+    if (carrier) filter.carrier = carrier;
     if (color) filter.color = color;
     
     // Price range filter
@@ -517,11 +516,10 @@ const advancedSearch = async (req, res) => {
       filters: {
         searchTerm,
         product_type,
-        brand, // ADDED to response
-        phoneLocation, // ADDED to response
         minPrice,
         maxPrice,
         country,
+        carrier,
         color,
         inStock
       },
@@ -922,6 +920,80 @@ const getProductImages = async (req, res) => {
   }
 };
 
+// @desc    Bulk upload images for multiple products
+// @route   POST /api/products/images/bulk-upload
+// @access  Public
+const bulkUploadImages = async (req, res) => {
+  try {
+    const { productIds } = req.body;
+    
+    if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an array of product IDs'
+      });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No images uploaded'
+      });
+    }
+
+    const results = [];
+    const errors = [];
+
+    // For each product, assign images (round-robin if multiple products)
+    for (let i = 0; i < productIds.length; i++) {
+      const productId = productIds[i];
+      
+      try {
+        const product = await Product.findById(productId);
+        
+        if (!product) {
+          errors.push({ productId, error: 'Product not found' });
+          continue;
+        }
+
+        // Assign images to this product (round-robin distribution)
+        const imagesForProduct = req.files.filter((_, index) => index % productIds.length === i);
+        
+        imagesForProduct.forEach(file => {
+          product.images.push({
+            url: file.path,
+            publicId: file.filename,
+            isPrimary: product.images.length === 0,
+            alt: product.product_name || 'product image'
+          });
+        });
+
+        await product.save();
+        results.push({ 
+          productId, 
+          imagesAdded: imagesForProduct.length 
+        });
+      } catch (error) {
+        errors.push({ productId, error: error.message });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Bulk upload completed',
+      results,
+      errors
+    });
+  } catch (error) {
+    console.error('Bulk upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error in bulk upload',
+      error: error.message
+    });
+  }
+};
+
 // ==================== FILTERS & CATEGORIES ====================
 
 // @desc    Get all product types
@@ -1163,12 +1235,12 @@ const getRecommendedProducts = async (req, res) => {
       });
     }
 
-    // Find similar products based on type, brand, or price range - ADDED brand matching
+    // Find similar products based on type, carrier, or price range
     const recommended = await Product.find({
       _id: { $ne: product._id },
       $or: [
         { product_type: product.product_type },
-        { brand: product.brand }, // ADDED brand matching
+        { carrier: product.carrier },
         {
           price: {
             $gte: product.price * 0.7,
@@ -1301,9 +1373,9 @@ const exportProductsToCSV = async (req, res) => {
       });
     }
 
-    // Define CSV headers - ADDED brand and phoneLocation
-    const headers = ['_id', 'product_name', 'brand', 'phoneLocation', 'product_type', 'capacity', 
-                    'country', 'sim', 'color', 'price', 'stock', 
+    // Define CSV headers
+    const headers = ['_id', 'product_name', 'product_type', 'models', 'capacity', 
+                    'country', 'sim', 'carrier', 'color', 'price', 'stock', 
                     'description', 'createdAt'];
 
     // Create CSV rows
@@ -1385,6 +1457,30 @@ const cleanupOldProducts = async (req, res) => {
   }
 };
 
+// @desc    Reindex products for search
+// @route   POST /api/products/maintenance/reindex
+// @access  Public (Should be protected in production)
+const reindexProducts = async (req, res) => {
+  try {
+    // This is a placeholder - actual reindexing depends on your search solution
+    // For MongoDB text search, you might need to recreate indexes
+    await Product.collection.dropIndexes();
+    await Product.ensureIndexes();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Products reindexed successfully'
+    });
+  } catch (error) {
+    console.error('Reindex error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error reindexing products',
+      error: error.message
+    });
+  }
+};
+
 // ==================== VALIDATION & CHECK ====================
 
 // @desc    Check if IMEI exists
@@ -1435,7 +1531,7 @@ const checkSKUExists = async (req, res) => {
   }
 };
 
-// Export all functions (maintaining original exports)
+// Export all functions
 module.exports = {
   // Basic CRUD
   createProduct,
@@ -1462,6 +1558,7 @@ module.exports = {
   deleteProductImage,
   setPrimaryImage,
   getProductImages,
+  bulkUploadImages,
   
   // Filters & Categories
   getProductTypes,
@@ -1488,6 +1585,7 @@ module.exports = {
   
   // Maintenance
   cleanupOldProducts,
+  reindexProducts,
   
   // Validation & Check
   checkIMEIExists,
