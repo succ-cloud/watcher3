@@ -9,16 +9,23 @@ const { cloudinary } = require('../config/cloudinary');
 const createProduct = async (req, res) => {
   try {
     let productData = req.body;
-    
-    // Parse JSON fields if they come as strings (for FormData)
+        // Parse JSON fields if they come as strings (for FormData)
     if (typeof productData === 'string') {
       productData = JSON.parse(productData);
     }
 
-    // Validate required fields - Updated with brand and phoneLocation
+    // Validate required fields
     const requiredFields = [
-      'product_type', 'product_name', 'brand', 'phoneLocation',
-      'capacity', 'country', 'sim', 'color', 'price', 'description'
+      'product_type',
+      'product_name',
+      'brand',
+      'phoneLocation',
+      'capacity',
+      'country',
+      'sim',
+      'color',
+      'price',
+      'description',
     ];
     
     const missingFields = requiredFields.filter(field => !productData[field]);
@@ -77,22 +84,20 @@ const getAllProducts = async (req, res) => {
       sortBy = 'createdAt',
       sortOrder = 'desc',
       product_type,
-      brand,
-      phoneLocation,
       minPrice,
       maxPrice,
       country,
+      carrier,
       color,
       inStock
     } = req.query;
 
-    // Build filter object - Updated with brand and phoneLocation
+    // Build filter object
     const filter = {};
 
     if (product_type) filter.product_type = product_type;
-    if (brand) filter.brand = { $regex: brand, $options: 'i' }; // Case-insensitive brand search
-    if (phoneLocation) filter.phoneLocation = phoneLocation;
     if (country) filter.country = country;
+    if (carrier) filter.carrier = carrier;
     if (color) filter.color = color;
     
     // Price range filter
@@ -366,7 +371,7 @@ const deleteProduct = async (req, res) => {
 
 // ==================== SEARCH OPERATIONS ====================
 
-// @desc    Search products by name, brand, or description
+// @desc    Search products by name
 // @route   GET /api/products/search
 // @access  Public
 const searchProductsByName = async (req, res) => {
@@ -393,14 +398,15 @@ const searchProductsByName = async (req, res) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    // Search products by name, brand, or description (case-insensitive) - Updated with brand
+    // Search products by name (case-insensitive)
     const searchRegex = new RegExp(q, 'i');
     
     const products = await Product.find({
       $or: [
         { product_name: searchRegex },
         { description: searchRegex },
-        { brand: searchRegex }
+        { models: searchRegex },
+        { carrier: searchRegex }
       ]
     })
     .sort(sort)
@@ -412,7 +418,8 @@ const searchProductsByName = async (req, res) => {
       $or: [
         { product_name: searchRegex },
         { description: searchRegex },
-        { brand: searchRegex }
+        { models: searchRegex },
+        { carrier: searchRegex }
       ]
     });
 
@@ -445,11 +452,10 @@ const advancedSearch = async (req, res) => {
     const {
       searchTerm,
       product_type,
-      brand,
-      phoneLocation,
       minPrice,
       maxPrice,
       country,
+      carrier,
       color,
       inStock,
       page = 1,
@@ -461,22 +467,22 @@ const advancedSearch = async (req, res) => {
     // Build search filter
     const filter = {};
 
-    // Text search across multiple fields - Updated with brand
+    // Text search across multiple fields
     if (searchTerm) {
       const searchRegex = new RegExp(searchTerm, 'i');
       filter.$or = [
         { product_name: searchRegex },
         { description: searchRegex },
-        { brand: searchRegex },
+        { models: searchRegex },
+        { carrier: searchRegex },
         { color: searchRegex }
       ];
     }
 
-    // Apply filters - Updated with brand and phoneLocation
+    // Apply filters
     if (product_type) filter.product_type = product_type;
-    if (brand) filter.brand = new RegExp(brand, 'i');
-    if (phoneLocation) filter.phoneLocation = phoneLocation;
     if (country) filter.country = country;
+    if (carrier) filter.carrier = carrier;
     if (color) filter.color = color;
     
     // Price range filter
@@ -520,11 +526,10 @@ const advancedSearch = async (req, res) => {
       filters: {
         searchTerm,
         product_type,
-        brand,
-        phoneLocation,
         minPrice,
         maxPrice,
         country,
+        carrier,
         color,
         inStock
       },
@@ -556,14 +561,11 @@ const bulkCreateProducts = async (req, res) => {
       });
     }
 
-    // Convert numeric fields for each product and validate required fields
+    // Convert numeric fields for each product
     products = products.map(product => ({
       ...product,
       price: parseFloat(product.price) || 0,
-      stock: parseInt(product.stock) || 0,
-      // Ensure brand and phoneLocation are included
-      brand: product.brand || 'Unknown',
-      phoneLocation: product.phoneLocation || 'Other'
+      stock: parseInt(product.stock) || 0
     }));
 
     // Insert multiple products
@@ -894,7 +896,7 @@ const setPrimaryImage = async (req, res) => {
 // @access  Public
 const getProductImages = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id).select('images product_name brand');
+    const product = await Product.findById(req.params.id).select('images product_name');
 
     if (!product) {
       return res.status(404).json({
@@ -909,7 +911,6 @@ const getProductImages = async (req, res) => {
       data: {
         productId: product._id,
         productName: product.product_name,
-        brand: product.brand,
         images: product.images
       }
     });
@@ -924,6 +925,80 @@ const getProductImages = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching images',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Bulk upload images for multiple products
+// @route   POST /api/products/images/bulk-upload
+// @access  Public
+const bulkUploadImages = async (req, res) => {
+  try {
+    const { productIds } = req.body;
+    
+    if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an array of product IDs'
+      });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No images uploaded'
+      });
+    }
+
+    const results = [];
+    const errors = [];
+
+    // For each product, assign images (round-robin if multiple products)
+    for (let i = 0; i < productIds.length; i++) {
+      const productId = productIds[i];
+      
+      try {
+        const product = await Product.findById(productId);
+        
+        if (!product) {
+          errors.push({ productId, error: 'Product not found' });
+          continue;
+        }
+
+        // Assign images to this product (round-robin distribution)
+        const imagesForProduct = req.files.filter((_, index) => index % productIds.length === i);
+        
+        imagesForProduct.forEach(file => {
+          product.images.push({
+            url: file.path,
+            publicId: file.filename,
+            isPrimary: product.images.length === 0,
+            alt: product.product_name || 'product image'
+          });
+        });
+
+        await product.save();
+        results.push({ 
+          productId, 
+          imagesAdded: imagesForProduct.length 
+        });
+      } catch (error) {
+        errors.push({ productId, error: error.message });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Bulk upload completed',
+      results,
+      errors
+    });
+  } catch (error) {
+    console.error('Bulk upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error in bulk upload',
       error: error.message
     });
   }
@@ -951,46 +1026,21 @@ const getProductTypes = async (req, res) => {
   }
 };
 
-// @desc    Get all brands
-// @route   GET /api/products/filters/brands
+// @desc    Get all carriers
+// @route   GET /api/products/filters/carriers
 // @access  Public
-const getAllBrands = async (req, res) => {
+const getAllCarriers = async (req, res) => {
   try {
-    const brands = await Product.distinct('brand');
-    // Filter out null/undefined and sort alphabetically
-    const filteredBrands = brands.filter(b => b && b !== 'Unknown').sort();
+    const carriers = await Product.distinct('carrier');
     res.status(200).json({
       success: true,
-      data: filteredBrands
+      data: carriers
     });
   } catch (error) {
-    console.error('Get brands error:', error);
+    console.error('Get carriers error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching brands',
-      error: error.message
-    });
-  }
-};
-
-// @desc    Get all phone locations
-// @route   GET /api/products/filters/locations
-// @access  Public
-const getAllPhoneLocations = async (req, res) => {
-  try {
-    const locations = await Product.distinct('phoneLocation');
-    // Sort locations in a specific order
-    const locationOrder = ['Douala', 'Yaoundé', 'Bafoussam', 'Bamenda', 'Limbe', 'Other'];
-    const sortedLocations = locationOrder.filter(loc => locations.includes(loc));
-    res.status(200).json({
-      success: true,
-      data: sortedLocations
-    });
-  } catch (error) {
-    console.error('Get locations error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching phone locations',
+      message: 'Error fetching carriers',
       error: error.message
     });
   }
@@ -1052,10 +1102,6 @@ const getInventoryStats = async (req, res) => {
     ]);
     const outOfStock = await Product.countDocuments({ stock: 0 });
     const lowStock = await Product.countDocuments({ stock: { $gt: 0, $lte: 5 } });
-    
-    // Brand and location statistics
-    const totalBrands = await Product.distinct('brand').then(brands => brands.filter(b => b && b !== 'Unknown').length);
-    const totalLocations = await Product.distinct('phoneLocation').then(locs => locs.length);
 
     res.status(200).json({
       success: true,
@@ -1064,9 +1110,7 @@ const getInventoryStats = async (req, res) => {
         totalStock: totalStock[0]?.total || 0,
         averagePrice: averagePrice[0]?.avg || 0,
         outOfStock,
-        lowStock,
-        totalBrands,
-        totalLocations
+        lowStock
       }
     });
   } catch (error) {
@@ -1079,94 +1123,54 @@ const getInventoryStats = async (req, res) => {
   }
 };
 
-// @desc    Get brand statistics
-// @route   GET /api/products/stats/brands
+// @desc    Get price range statistics
+// @route   GET /api/products/stats/price-range
 // @access  Public
-const getBrandStats = async (req, res) => {
+const getPriceRangeStats = async (req, res) => {
   try {
-    const stats = await Product.aggregate([
-      {
-        $match: { brand: { $ne: null, $ne: 'Unknown' } }
-      },
+    const priceStats = await Product.aggregate([
       {
         $group: {
-          _id: '$brand',
-          count: { $sum: 1 },
-          totalStock: { $sum: '$stock' },
-          averagePrice: { $avg: '$price' },
+          _id: null,
           minPrice: { $min: '$price' },
-          maxPrice: { $max: '$price' }
+          maxPrice: { $max: '$price' },
+          avgPrice: { $avg: '$price' }
         }
-      },
+      }
+    ]);
+
+    const priceRanges = await Product.aggregate([
       {
-        $project: {
-          brand: '$_id',
-          count: 1,
-          totalStock: 1,
-          averagePrice: { $round: ['$averagePrice', 2] },
-          minPrice: 1,
-          maxPrice: 1,
-          _id: 0
+        $bucket: {
+          groupBy: '$price',
+          boundaries: [0, 100, 500, 1000, 2000, 5000],
+          default: '5000+',
+          output: {
+            count: { $sum: 1 },
+            products: { $push: '$product_name' }
+          }
         }
-      },
-      { $sort: { count: -1 } }
+      }
     ]);
 
     res.status(200).json({
       success: true,
-      data: stats
+      data: {
+        summary: priceStats[0] || { minPrice: 0, maxPrice: 0, avgPrice: 0 },
+        ranges: priceRanges
+      }
     });
   } catch (error) {
-    console.error('Get brand stats error:', error);
+    console.error('Get price stats error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching brand statistics',
+      message: 'Error fetching price statistics',
       error: error.message
     });
   }
 };
 
-// @desc    Get location statistics
-// @route   GET /api/products/stats/locations
-// @access  Public
-const getLocationStats = async (req, res) => {
-  try {
-    const stats = await Product.aggregate([
-      {
-        $group: {
-          _id: '$phoneLocation',
-          count: { $sum: 1 },
-          totalStock: { $sum: '$stock' },
-          averagePrice: { $avg: '$price' }
-        }
-      },
-      {
-        $project: {
-          location: '$_id',
-          count: 1,
-          totalStock: 1,
-          averagePrice: { $round: ['$averagePrice', 2] },
-          _id: 0
-        }
-      },
-      { $sort: { count: -1 } }
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: stats
-    });
-  } catch (error) {
-    console.error('Get location stats error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching location statistics',
-      error: error.message
-    });
-  }
-};
-
-// @desc    Get products by type with brand and location breakdown
+// @desc    Get products by type
 // @route   GET /api/products/stats/by-type
 // @access  Public
 const getProductsByType = async (req, res) => {
@@ -1177,20 +1181,7 @@ const getProductsByType = async (req, res) => {
           _id: '$product_type',
           count: { $sum: 1 },
           totalStock: { $sum: '$stock' },
-          averagePrice: { $avg: '$price' },
-          brands: { $addToSet: '$brand' },
-          locations: { $addToSet: '$phoneLocation' }
-        }
-      },
-      {
-        $project: {
-          productType: '$_id',
-          count: 1,
-          totalStock: 1,
-          averagePrice: { $round: ['$averagePrice', 2] },
-          brandCount: { $size: { $filter: { input: '$brands', as: 'b', cond: { $and: [{ $ne: ['$$b', null] }, { $ne: ['$$b', 'Unknown'] }] } } } },
-          locationCount: { $size: '$locations' },
-          _id: 0
+          averagePrice: { $avg: '$price' }
         }
       },
       { $sort: { count: -1 } }
@@ -1217,11 +1208,10 @@ const getProductsByType = async (req, res) => {
 // @access  Public
 const getFeaturedProducts = async (req, res) => {
   try {
-    // Get products with images, in stock, and from popular brands
+    // You can customize this logic - here we're getting products with images and in stock
     const products = await Product.find({
       'images.0': { $exists: true },
-      stock: { $gt: 0 },
-      brand: { $ne: 'Unknown' }
+      stock: { $gt: 0 }
     })
     .limit(10)
     .sort({ createdAt: -1 });
@@ -1255,13 +1245,12 @@ const getRecommendedProducts = async (req, res) => {
       });
     }
 
-    // Find similar products based on type, brand, location, or price range
+    // Find similar products based on type, carrier, or price range
     const recommended = await Product.find({
       _id: { $ne: product._id },
       $or: [
         { product_type: product.product_type },
-        { brand: product.brand },
-        { phoneLocation: product.phoneLocation },
+        { carrier: product.carrier },
         {
           price: {
             $gte: product.price * 0.7,
@@ -1289,80 +1278,6 @@ const getRecommendedProducts = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching recommended products',
-      error: error.message
-    });
-  }
-};
-
-// @desc    Get products by brand
-// @route   GET /api/products/brand/:brandName
-// @access  Public
-const getProductsByBrand = async (req, res) => {
-  try {
-    const { brandName } = req.params;
-    const { page = 1, limit = 20 } = req.query;
-    
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    const products = await Product.find({ 
-      brand: { $regex: brandName, $options: 'i' } 
-    })
-    .skip(skip)
-    .limit(parseInt(limit))
-    .sort({ createdAt: -1 });
-    
-    const total = await Product.countDocuments({ 
-      brand: { $regex: brandName, $options: 'i' } 
-    });
-    
-    res.status(200).json({
-      success: true,
-      count: products.length,
-      total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / parseInt(limit)),
-      data: products
-    });
-  } catch (error) {
-    console.error('Get products by brand error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching products by brand',
-      error: error.message
-    });
-  }
-};
-
-// @desc    Get products by location
-// @route   GET /api/products/location/:location
-// @access  Public
-const getProductsByLocation = async (req, res) => {
-  try {
-    const { location } = req.params;
-    const { page = 1, limit = 20 } = req.query;
-    
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    const products = await Product.find({ phoneLocation: location })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .sort({ createdAt: -1 });
-    
-    const total = await Product.countDocuments({ phoneLocation: location });
-    
-    res.status(200).json({
-      success: true,
-      count: products.length,
-      total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / parseInt(limit)),
-      data: products
-    });
-  } catch (error) {
-    console.error('Get products by location error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching products by location',
       error: error.message
     });
   }
@@ -1468,12 +1383,10 @@ const exportProductsToCSV = async (req, res) => {
       });
     }
 
-    // Define CSV headers - Updated with brand and phoneLocation
-    const headers = [
-      '_id', 'product_name', 'brand', 'phoneLocation', 'product_type', 
-      'capacity', 'country', 'sim', 'color', 'price', 'stock', 
-      'description', 'createdAt', 'status'
-    ];
+    // Define CSV headers
+    const headers = ['_id', 'product_name', 'product_type', 'models', 'capacity', 
+                    'country', 'sim', 'carrier', 'color', 'price', 'stock', 
+                    'description', 'createdAt'];
 
     // Create CSV rows
     const csvRows = [];
@@ -1554,8 +1467,81 @@ const cleanupOldProducts = async (req, res) => {
   }
 };
 
-// ==================== EXPORT FUNCTIONS ====================
+// @desc    Reindex products for search
+// @route   POST /api/products/maintenance/reindex
+// @access  Public (Should be protected in production)
+const reindexProducts = async (req, res) => {
+  try {
+    // This is a placeholder - actual reindexing depends on your search solution
+    // For MongoDB text search, you might need to recreate indexes
+    await Product.collection.dropIndexes();
+    await Product.ensureIndexes();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Products reindexed successfully'
+    });
+  } catch (error) {
+    console.error('Reindex error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error reindexing products',
+      error: error.message
+    });
+  }
+};
 
+// ==================== VALIDATION & CHECK ====================
+
+// @desc    Check if IMEI exists
+// @route   GET /api/products/check/imei/:imei
+// @access  Public
+const checkIMEIExists = async (req, res) => {
+  try {
+    const { imei } = req.params;
+    
+    const product = await Product.findOne({ IME: imei });
+
+    res.status(200).json({
+      success: true,
+      exists: !!product,
+      data: product ? { productId: product._id, productName: product.product_name } : null
+    });
+  } catch (error) {
+    console.error('Check IMEI error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error checking IMEI',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Check if SKU exists (using models as SKU)
+// @route   GET /api/products/check/sku/:sku
+// @access  Public
+const checkSKUExists = async (req, res) => {
+  try {
+    const { sku } = req.params;
+    
+    const product = await Product.findOne({ models: sku });
+
+    res.status(200).json({
+      success: true,
+      exists: !!product,
+      data: product ? { productId: product._id, productName: product.product_name } : null
+    });
+  } catch (error) {
+    console.error('Check SKU error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error checking SKU',
+      error: error.message
+    });
+  }
+};
+
+// Export all functions
 module.exports = {
   // Basic CRUD
   createProduct,
@@ -1582,34 +1568,36 @@ module.exports = {
   deleteProductImage,
   setPrimaryImage,
   getProductImages,
+  bulkUploadImages,
   
-  // Filters & Categories - Updated
+  // Filters & Categories
   getProductTypes,
-  getAllBrands,
-  getAllPhoneLocations,
+  getAllCarriers,
   getAllCountries,
   getAllColors,
   
-  // Statistics - Updated
+  // Statistics
   getInventoryStats,
-  getBrandStats,
-  getLocationStats,
+  getPriceRangeStats,
   getProductsByType,
   
-  // Featured & Recommended - Updated
+  // Featured & Recommended
   getFeaturedProducts,
   getRecommendedProducts,
-  getProductsByBrand,
-  getProductsByLocation,
   getNewArrivals,
   
   // Duplicate & Clone
   cloneProduct,
   
-  // Export Functions - Updated
+  // Export Functions
   exportProductsToCSV,
   exportProductsToJSON,
   
   // Maintenance
-  cleanupOldProducts
+  cleanupOldProducts,
+  reindexProducts,
+  
+  // Validation & Check
+  checkIMEIExists,
+  checkSKUExists
 };
