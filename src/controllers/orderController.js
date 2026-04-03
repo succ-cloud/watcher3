@@ -150,8 +150,8 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check if user exists and get WhatsApp number
-    const user = await User.findById(userId).select('name businessName tel whatsappNumber businessAddress');
+    // Check if user exists using the _id from MongoDB
+    const user = await User.findById(userId).select('businessName businessAddress tel whatsappNumber');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -208,9 +208,9 @@ async function createOrder(req, res) {
     const originalTotal = product.price * qty;
     const notifyAudience = getNotifyAudience(orderType);
     
-    // Create order
+    // Create order with business details snapshot
     const orderData = {
-      userId,
+      userId: user._id, // Using MongoDB's default _id
       productId,
       productName: product.product_name,
       productPrice: product.price,
@@ -219,10 +219,15 @@ async function createOrder(req, res) {
       originalTotal,
       notifyAudience,
       userNotes: userNotes || '',
-      status: ORDER_STATUS.PENDING
+      status: ORDER_STATUS.PENDING,
+      // Capture business details at order creation time from the user document
+      businessName: user.businessName,
+      businessAddress: user.businessAddress,
+      tel: user.tel,
+      whatsappNumber: user.whatsappNumber
     };
     
-    // Add delivery address if provided
+    // Add delivery address if provided, otherwise use user's business address
     if (deliveryAddress) {
       orderData.deliveryInfo = {
         deliveryAddress,
@@ -257,11 +262,10 @@ async function createOrder(req, res) {
         order,
         user: {
           id: user._id,
-          name: user.name,
           businessName: user.businessName,
+          businessAddress: user.businessAddress,
           tel: user.tel,
-          whatsappNumber: user.whatsappNumber,
-          businessAddress: user.businessAddress
+          whatsappNumber: user.whatsappNumber
         },
         notificationsSent: true
       }
@@ -276,7 +280,6 @@ async function createOrder(req, res) {
     });
   }
 }
-
 /**
  * PATCH /api/orders/:id/accept
  * Accept an order and reduce stock
