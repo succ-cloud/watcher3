@@ -84,8 +84,7 @@ const getAllProducts = async (req, res) => {
       sortBy = 'createdAt',
       sortOrder = 'desc',
       product_type,
-      brand,
-      phoneLocation,
+    
       minPrice,
       maxPrice,
       country,
