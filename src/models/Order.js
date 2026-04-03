@@ -10,7 +10,7 @@ const ORDER_STATUS = {
   ACCEPTED: 'accepted',
   REJECTED: 'rejected',
   CANCELLED: 'cancelled',
-  DELIVERED: 'delivered' // Add delivered status
+  DELIVERED: 'delivered'
 };
 
 const NOTIFICATION_AUDIENCE = {
@@ -20,12 +20,38 @@ const NOTIFICATION_AUDIENCE = {
 };
 
 const orderSchema = new mongoose.Schema({
-  // User Information
+  // User Information (reference)
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
     index: true
+  },
+  
+  // ==================== SNAPSHOT OF USER BUSINESS DETAILS AT ORDER TIME ====================
+  // These fields capture the user's business information at the moment of order creation
+  businessName: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  
+  businessAddress: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  
+  tel: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  
+  whatsappNumber: {
+    type: String,
+    required: true,
+    trim: true
   },
   
   // Order Details
@@ -182,6 +208,8 @@ orderSchema.index({ notifyAudience: 1, status: 1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ 'deliveryInfo.deliveryStatus': 1 });
 orderSchema.index({ 'deliveryInfo.estimatedDeliveryDate': 1 });
+orderSchema.index({ tel: 1 });
+orderSchema.index({ businessName: 1 });
 
 // Virtual for total price based on order type
 orderSchema.virtual('totalPrice').get(function() {
