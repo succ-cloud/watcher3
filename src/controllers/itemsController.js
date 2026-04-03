@@ -79,15 +79,16 @@ const createProduct = async (req, res) => {
 const getAllProducts = async (req, res) => {
   try {
     const {
-      page = 1,
+       page = 1,
       limit = 10,
       sortBy = 'createdAt',
       sortOrder = 'desc',
       product_type,
+      brand,
+      phoneLocation,
       minPrice,
       maxPrice,
       country,
-      carrier,
       color,
       inStock
     } = req.query;
