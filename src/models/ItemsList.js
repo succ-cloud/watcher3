@@ -48,13 +48,23 @@ const productSchema = new mongoose.Schema({
 
   brand: {
     type: String,
-    required: [true, 'brand is required'],
-    trim: true
+    required: [true, 'Brand is required'],
+    trim: true,
+    maxlength: [100, 'Brand name cannot exceed 100 characters'],
+    index: true // For faster brand searches
   },
+  
+  // Phone Location Information - NEW FIELD
   phoneLocation: {
     type: String,
-    required: [true, 'location is required'],
-    trim: true
+    required: [true, 'Phone location is required'],
+    trim: true,
+    enum: {
+      values: ['Douala', 'Yaounde', 'Bafoussam', 'Bamenda', 'Limbe', 'Other'],
+      message: 'Phone location must be one of: Douala, Yaoundé, Bafoussam, Bamenda, Limbe, Other'
+    },
+    default: 'Other',
+    index: true // For faster location-based searches
   },
   // Default IMEI with default value "clean"
 
