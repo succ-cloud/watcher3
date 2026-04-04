@@ -45,7 +45,17 @@ const productSchema = new mongoose.Schema({
     required: [true, 'Color is required'],
     trim: true
   },
-  
+
+  brand: {
+    type: String,
+    required: [true, 'brand is required'],
+    trim: true
+  },
+  phoneLocation: {
+    type: String,
+    required: [true, 'location is required'],
+    trim: true
+  },
   // Default IMEI with default value "clean"
 
   
