@@ -713,6 +713,10 @@ async function getLowStockOrders(req, res) {
  * GET /api/orders
  * Get orders with filters
  */
+/**
+ * GET /api/orders
+ * Get orders with filters
+ */
 async function getOrders(req, res) {
   try {
     const { userId, status, orderType, notifyAudience, limit = 50, page = 1 } = req.query;
@@ -736,9 +740,23 @@ async function getOrders(req, res) {
     
     const total = await Order.countDocuments(filter);
     
+    // Format the response to include businessAddress from the order document
+    const formattedOrders = orders.map(order => {
+      const orderObj = order.toObject();
+      return {
+        ...orderObj,
+        // Ensure businessAddress is included (it's already in the order document)
+        businessAddress: orderObj.businessAddress,
+        // Also include other business details if needed
+        businessName: orderObj.businessName,
+        tel: orderObj.tel,
+        whatsappNumber: orderObj.whatsappNumber
+      };
+    });
+    
     return res.json({
       success: true,
-      data: orders,
+      data: formattedOrders,
       pagination: {
         page: parseInt(page),
         limit: limitNum,
@@ -756,7 +774,6 @@ async function getOrders(req, res) {
     });
   }
 }
-
 /**
  * GET /api/orders/:id
  * Get a single order
