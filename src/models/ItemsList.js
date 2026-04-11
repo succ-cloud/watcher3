@@ -57,7 +57,7 @@ const productSchema = new mongoose.Schema({
   // Phone Location Information - NEW FIELD
   phoneLocation: {
     type: String,
-    required: [true, 'Phone location is required'],
+   
     trim: true,
     enum: {
       values: ['Douala', 'Yaounde', 'Bafoussam', 'Bamenda', 'Limbe', 'Other'],
