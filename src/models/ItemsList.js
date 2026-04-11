@@ -48,7 +48,7 @@ const productSchema = new mongoose.Schema({
 
   brand: {
     type: String,
-    required: [true, 'Brand is required'],
+    
     trim: true,
     maxlength: [100, 'Brand name cannot exceed 100 characters'],
     index: true // For faster brand searches
