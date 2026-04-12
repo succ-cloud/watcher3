@@ -120,6 +120,10 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
  * Create a new order
  */
 async function createOrder(req, res) {
+  // Start a mongoose session for transaction
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
   try {
     console.log('📝 Creating order...');
     console.log('Request body:', req.body);
@@ -136,6 +140,8 @@ async function createOrder(req, res) {
     
     // Validation
     if (!userId || !productId || !orderType || !quantity) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Missing required fields: userId, productId, orderType, quantity'
@@ -144,6 +150,8 @@ async function createOrder(req, res) {
     
     // Validate order type
     if (!Object.values(ORDER_TYPES).includes(orderType)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Invalid order type. Must be "buy" or "offer"'
@@ -153,6 +161,8 @@ async function createOrder(req, res) {
     // Check if user exists using the _id from MongoDB
     const user = await User.findById(userId).select('businessName businessAddress tel whatsappNumber name');
     if (!user) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -162,6 +172,8 @@ async function createOrder(req, res) {
     // Check if product exists and get details
     const product = await Product.findById(productId);
     if (!product) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         success: false,
         message: 'Product not found'
@@ -171,6 +183,8 @@ async function createOrder(req, res) {
     // Validate quantity
     const qty = Number(quantity);
     if (!Number.isFinite(qty) || qty < 1) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Quantity must be a positive number'
@@ -179,6 +193,8 @@ async function createOrder(req, res) {
     
     // Check stock availability for buy orders
     if (orderType === ORDER_TYPES.BUY && product.stock < qty) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: `Insufficient stock. Available: ${product.stock}`,
@@ -190,6 +206,8 @@ async function createOrder(req, res) {
     if (orderType === ORDER_TYPES.OFFER) {
       const offerPrice = Number(offeredPrice);
       if (!Number.isFinite(offerPrice) || offerPrice <= 0) {
+        await session.abortTransaction();
+        session.endSession();
         return res.status(400).json({
           success: false,
           message: 'Valid offered price is required for offer orders'
@@ -197,12 +215,67 @@ async function createOrder(req, res) {
       }
       
       if (offerPrice >= product.price) {
+        await session.abortTransaction();
+        session.endSession();
         return res.status(400).json({
           success: false,
           message: 'Offered price must be less than the original price to negotiate'
         });
       }
     }
+    
+    // ========== VERIFY WHATSAPP RECIPIENT BEFORE CREATING ORDER ==========
+    let whatsappRecipient = null;
+    let whatsappError = null;
+    
+    if (orderType === ORDER_TYPES.BUY) {
+      // For BUY orders: Check if there's a salesman for this business address
+      const businessAddress = deliveryAddress || user.businessAddress;
+      if (!businessAddress) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'No business address found. Cannot assign salesman.'
+        });
+      }
+      
+      const salesman = await User.findOne({
+        role: 'salesman',
+        accountStatus: 'active',
+        businessAddress: { $regex: new RegExp(businessAddress, 'i') }
+      }).select('name businessAddress whatsappNumber');
+      
+      if (!salesman || !salesman.whatsappNumber) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: `No active salesman found for business address: ${businessAddress}. Please contact admin.`,
+          businessAddress: businessAddress
+        });
+      }
+      
+      whatsappRecipient = salesman;
+    } else if (orderType === ORDER_TYPES.OFFER) {
+      // For OFFER orders: Check if there's an active admin
+      const admin = await User.findOne({
+        role: 'admin',
+        accountStatus: 'active'
+      }).select('name businessAddress whatsappNumber');
+      
+      if (!admin || !admin.whatsappNumber) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'No active admin found. Cannot process offer order.'
+        });
+      }
+      
+      whatsappRecipient = admin;
+    }
+    // ========== END VERIFICATION ==========
     
     // Calculate totals
     const originalTotal = product.price * qty;
@@ -243,40 +316,73 @@ async function createOrder(req, res) {
       orderData.offeredPrice = Number(offeredPrice);
     }
     
-    const order = await Order.create(orderData);
+    // Create order within transaction
+    const order = await Order.create([orderData], { session });
     
-    // Create in-app notifications
-    await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_SUBMITTED);
+    // Create in-app notifications within transaction
+    await createOrderNotification(order[0], NOTIFICATION_TYPES.ORDER_SUBMITTED);
     
-    // If buy order, reduce stock
+    // If buy order, reduce stock within transaction
     if (orderType === ORDER_TYPES.BUY) {
       product.stock -= qty;
-      await product.save();
+      await product.save({ session });
     }
     
-    // ========== SEND WHATSAPP NOTIFICATIONS ==========
+    // ========== SEND WHATSAPP NOTIFICATION (WILL ROLLBACK IF FAILS) ==========
     let whatsappResult = null;
+    
     try {
       if (orderType === ORDER_TYPES.BUY) {
-        // For BUY orders: Send to salesman based on business address match
-        whatsappResult = await whatsappService.notifySalesmanByAddress(order, user);
-        console.log('WhatsApp notification sent to matched salesman:', whatsappResult);
+        // Send to salesman
+        const messageBody = whatsappService.formatOrderMessageBody(order[0], user, 'new_order');
+        const fullMessage = `${messageBody}\n\n---\n📍 Assigned Region: ${whatsappRecipient.businessAddress}\n👤 Assigned Salesman: ${whatsappRecipient.name}\n💡 Action Required: Please log in to the dashboard to respond to this order.`;
+        
+        whatsappResult = await whatsappService.sendMessage(whatsappRecipient.whatsappNumber, fullMessage);
       } else if (orderType === ORDER_TYPES.OFFER) {
-        // For OFFER orders: Send to admin
-        whatsappResult = await whatsappService.notifyAdminForOffer(order, user);
-        console.log('WhatsApp notification sent to admin:', whatsappResult);
+        // Send to admin
+        const messageBody = whatsappService.formatOrderMessageBody(order[0], user, 'new_order');
+        const fullMessage = `${messageBody}\n\n---\n👤 Admin: ${whatsappRecipient.name}\n💡 Action Required: Please review this offer and respond through the dashboard.`;
+        
+        whatsappResult = await whatsappService.sendMessage(whatsappRecipient.whatsappNumber, fullMessage);
       }
+      
+      // Check if WhatsApp message was sent successfully
+      if (!whatsappResult || !whatsappResult.success) {
+        console.error('WhatsApp message failed:', whatsappResult?.error);
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to send WhatsApp notification. Order not created.',
+          error: whatsappResult?.error || 'WhatsApp API error',
+          details: whatsappResult?.details
+        });
+      }
+      
+      console.log('✅ WhatsApp notification sent successfully:', whatsappResult);
+      
     } catch (whatsappError) {
-      console.error('WhatsApp notification failed:', whatsappError);
-      // Don't fail the order creation if WhatsApp fails
+      console.error('WhatsApp notification error:', whatsappError);
+      // Rollback the entire transaction
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send WhatsApp notification. Order not created.',
+        error: whatsappError.message
+      });
     }
-    // ========== END WHATSAPP NOTIFICATIONS ==========
+    // ========== END WHATSAPP NOTIFICATION ==========
+    
+    // Commit the transaction if everything succeeded
+    await session.commitTransaction();
+    session.endSession();
     
     return res.status(201).json({
       success: true,
       message: 'Order created successfully',
       data: {
-        order,
+        order: order[0],
         user: {
           id: user._id,
           businessName: user.businessName,
@@ -284,12 +390,22 @@ async function createOrder(req, res) {
           tel: user.tel,
           whatsappNumber: user.whatsappNumber
         },
-        notificationsSent: true,
-        whatsappNotification: whatsappResult
+        whatsappNotification: {
+          success: true,
+          recipient: {
+            name: whatsappRecipient.name,
+            role: orderType === ORDER_TYPES.BUY ? 'salesman' : 'admin',
+            whatsappNumber: whatsappRecipient.whatsappNumber
+          },
+          messageId: whatsappResult.messageId
+        }
       }
     });
     
   } catch (error) {
+    // Rollback transaction on any error
+    await session.abortTransaction();
+    session.endSession();
     console.error('Error creating order:', error);
     return res.status(500).json({
       success: false,
