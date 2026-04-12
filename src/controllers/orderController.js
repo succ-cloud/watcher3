@@ -151,7 +151,7 @@ async function createOrder(req, res) {
     }
     
     // Check if user exists using the _id from MongoDB
-    const user = await User.findById(userId).select('businessName businessAddress tel whatsappNumber');
+    const user = await User.findById(userId).select('businessName businessAddress tel whatsappNumber name');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -210,7 +210,7 @@ async function createOrder(req, res) {
     
     // Create order with business details snapshot
     const orderData = {
-      userId: user._id, // Using MongoDB's default _id
+      userId: user._id,
       productId,
       productName: product.product_name,
       productPrice: product.price,
@@ -220,7 +220,6 @@ async function createOrder(req, res) {
       notifyAudience,
       userNotes: userNotes || '',
       status: ORDER_STATUS.PENDING,
-      // Capture business details at order creation time from the user document
       businessName: user.businessName,
       businessAddress: user.businessAddress,
       tel: user.tel,
@@ -255,6 +254,24 @@ async function createOrder(req, res) {
       await product.save();
     }
     
+    // ========== SEND WHATSAPP NOTIFICATIONS ==========
+    let whatsappResult = null;
+    try {
+      if (orderType === ORDER_TYPES.BUY) {
+        // For BUY orders: Send to salesman based on business address match
+        whatsappResult = await whatsappService.notifySalesmanByAddress(order, user);
+        console.log('WhatsApp notification sent to matched salesman:', whatsappResult);
+      } else if (orderType === ORDER_TYPES.OFFER) {
+        // For OFFER orders: Send to admin
+        whatsappResult = await whatsappService.notifyAdminForOffer(order, user);
+        console.log('WhatsApp notification sent to admin:', whatsappResult);
+      }
+    } catch (whatsappError) {
+      console.error('WhatsApp notification failed:', whatsappError);
+      // Don't fail the order creation if WhatsApp fails
+    }
+    // ========== END WHATSAPP NOTIFICATIONS ==========
+    
     return res.status(201).json({
       success: true,
       message: 'Order created successfully',
@@ -267,7 +284,8 @@ async function createOrder(req, res) {
           tel: user.tel,
           whatsappNumber: user.whatsappNumber
         },
-        notificationsSent: true
+        notificationsSent: true,
+        whatsappNotification: whatsappResult
       }
     });
     
