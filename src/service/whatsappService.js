@@ -135,7 +135,7 @@ class WhatsAppService {
       if (options.template) {
         requestBody = {
           messaging_product: 'whatsapp',
-          to:+237675106585,
+          to:+formattedNumber,
           type: 'template',
           template: {
             name: "hello_world",
@@ -148,7 +148,7 @@ class WhatsAppService {
       else {
         requestBody = {
           messaging_product: 'whatsapp',
-          to: +237675106585,
+          to: formattedNumber,
           type: 'text',
           text: {
             preview_url: options.previewUrl || false,
