@@ -3,6 +3,7 @@ const { Order, ORDER_TYPES, ORDER_STATUS, NOTIFICATION_AUDIENCE } = require('../
 const { Notification, NOTIFICATION_TYPES } = require('../models/Notification');
 const Product = require('../models/ItemsList');
 const User = require('../models/User');
+const whatsappService = require('../service/whatsappService');
 
 /**
  * Helper function to determine who should be notified
