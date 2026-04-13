@@ -135,11 +135,11 @@ class WhatsAppService {
       if (options.template) {
         requestBody = {
           messaging_product: 'whatsapp',
-          to: formattedNumber,
+          to: 675106585,
           type: 'template',
           template: {
-            name: options.template.name,
-            language: { code: options.template.language || 'en_US' },
+            name: "hello_world",
+            language: { code:  'en_US' },
             components: options.template.components || []
           }
         };
@@ -148,7 +148,7 @@ class WhatsAppService {
       else {
         requestBody = {
           messaging_product: 'whatsapp',
-          to: formattedNumber,
+          to: 675106585,
           type: 'text',
           text: {
             preview_url: options.previewUrl || false,
