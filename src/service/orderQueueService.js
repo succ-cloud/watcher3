@@ -3,43 +3,53 @@ const { ORDER_TYPES } = require('../models/Order');
 
 class OrderQueueService {
   constructor() {
-    this.orderQueue = new Map(); // Store pending orders by recipient key
-    this.processingTimers = new Map(); // Store timers for each recipient
-    this.batchDelay = 10000; // 10 seconds delay to collect multiple orders
+    this.orderQueue = new Map(); // Store pending orders by recipient key + userId
+    this.processingTimers = new Map(); // Store timers for each recipient + userId
+    this.batchDelay = 10000; // 10 seconds delay to collect multiple orders from SAME USER
   }
 
   /**
-   * Generate a unique key for a recipient
+   * Generate a unique key for a recipient + user combination
+   * This ensures orders from different users are NEVER batched together
    */
-  getRecipientKey(recipientType, recipientId, region = null) {
+  getRecipientKey(recipientType, recipientId, userId, region = null) {
+    // Include userId to separate different customers
     if (recipientType === 'admin') {
-      return `admin_${recipientId}`;
+      return `admin_${recipientId}_user_${userId}`;
     } else if (recipientType === 'salesman') {
-      return `salesman_${recipientId}_${region || 'all'}`;
+      return `salesman_${recipientId}_user_${userId}_${region || 'all'}`;
     }
-    return `${recipientType}_${recipientId}`;
+    return `${recipientType}_${recipientId}_user_${userId}`;
   }
 
   /**
-   * Add an order to the queue for batching
+   * Add an order to the queue for batching (only batches orders from SAME user)
    */
   addOrder(order, recipient, orderType, user, region = null) {
+    const userId = user._id.toString();
     const recipientKey = this.getRecipientKey(
       recipient.type, 
       recipient.id, 
+      userId,
       region
     );
     
     if (!this.orderQueue.has(recipientKey)) {
       this.orderQueue.set(recipientKey, {
         recipient: recipient,
+        user: {
+          id: userId,
+          name: user.businessName || user.name,
+          phone: user.tel,
+          address: user.businessAddress
+        },
         orders: [],
         orderTypes: new Set(),
         regions: new Set(),
         totalQuantity: 0,
         totalAmount: 0,
-        customers: new Map(),
-        products: new Map()
+        products: new Map(),
+        createdAt: new Date()
       });
     }
     
@@ -48,7 +58,6 @@ class OrderQueueService {
     // Add order to the batch
     queueItem.orders.push({
       order: order,
-      user: user,
       orderType: orderType,
       region: region,
       createdAt: new Date()
@@ -59,17 +68,7 @@ class OrderQueueService {
     queueItem.totalQuantity += order.quantity;
     queueItem.totalAmount += order.originalTotal;
     
-    // Track unique customers
-    const customerKey = user._id.toString();
-    if (!queueItem.customers.has(customerKey)) {
-      queueItem.customers.set(customerKey, {
-        name: user.businessName || user.name,
-        phone: user.tel,
-        address: user.businessAddress
-      });
-    }
-    
-    // Track products
+    // Track products for this user's batch
     const productKey = order.productId.toString();
     if (!queueItem.products.has(productKey)) {
       queueItem.products.set(productKey, {
@@ -82,14 +81,20 @@ class OrderQueueService {
     product.quantity += order.quantity;
     product.totalValue += order.originalTotal;
     
-    // Schedule processing for this recipient
+    // Schedule processing for this recipient + user combination
     this.scheduleProcessing(recipientKey);
     
-    return { queued: true, batchKey: recipientKey, batchSize: queueItem.orders.length };
+    return { 
+      queued: true, 
+      batchKey: recipientKey, 
+      batchSize: queueItem.orders.length,
+      userId: userId,
+      customerName: queueItem.user.name
+    };
   }
 
   /**
-   * Schedule processing of batched orders for a recipient
+   * Schedule processing of batched orders for a recipient + user
    */
   scheduleProcessing(recipientKey) {
     if (this.processingTimers.has(recipientKey)) {
@@ -114,12 +119,12 @@ class OrderQueueService {
       return;
     }
     
-    console.log(`📦 Processing batch for ${queueItem.recipient.name}: ${queueItem.orders.length} orders`);
+    console.log(`📦 Processing batch for ${queueItem.recipient.name} (Customer: ${queueItem.user.name}): ${queueItem.orders.length} orders`);
     
-    // Format consolidated message
+    // Format consolidated message for this specific customer
     const message = this.formatBatchMessage(queueItem);
     
-    // Send WhatsApp message
+    // Send WhatsApp message to the recipient (salesman or admin)
     const result = await whatsappService.sendMessage(
       queueItem.recipient.whatsappNumber,
       message,
@@ -139,10 +144,10 @@ class OrderQueueService {
   }
 
   /**
-   * Format consolidated message for a batch of orders
+   * Format consolidated message for a batch of orders from a SINGLE customer
    */
   formatBatchMessage(queueItem) {
-    const { recipient, orders, orderTypes, regions, totalQuantity, totalAmount, customers, products } = queueItem;
+    const { recipient, user, orders, orderTypes, totalQuantity, totalAmount, products } = queueItem;
     const orderCount = orders.length;
     const isMultipleOrders = orderCount > 1;
     const currency = 'XAF';
@@ -150,51 +155,55 @@ class OrderQueueService {
     
     let message = '';
     
-    // Header
+    // Header - indicates this is from a single customer
     if (recipient.type === 'admin') {
-      message = `🔔 *BATCH ORDER NOTIFICATION - ADMIN*\n\n`;
+      message = `🔔 *ORDER BATCH NOTIFICATION - ADMIN*\n\n`;
     } else if (recipient.type === 'salesman') {
-      message = `🔔 *BATCH ORDER NOTIFICATION - ${recipient.name.toUpperCase()}*\n\n`;
+      message = `🔔 *ORDER BATCH NOTIFICATION - ${recipient.name.toUpperCase()}*\n\n`;
     }
     
-    message += `📊 *Summary*\n`;
-    message += `• Total Orders: ${orderCount}\n`;
+    // Customer Information
+    message += `👤 *Customer Information*\n`;
+    message += `• Name: ${user.name}\n`;
+    message += `• Phone: ${user.phone}\n`;
+    message += `• Address: ${user.address}\n\n`;
+    
+    // Batch Summary
+    message += `📊 *Order Summary*\n`;
+    message += `• Number of Orders: ${orderCount}\n`;
     message += `• Order Types: ${Array.from(orderTypes).join(', ')}\n`;
     message += `• Total Items: ${totalQuantity}\n`;
     message += `• Total Value: ${totalAmount.toLocaleString()} ${currency}\n`;
     message += `• Time Window: ${date}\n\n`;
     
-    if (regions.size > 0) {
-      message += `📍 *Regions Covered*\n`;
-      Array.from(regions).forEach(region => {
-        message += `• ${region}\n`;
-      });
-      message += `\n`;
-    }
-    
-    // Customers section
-    message += `👥 *Customers (${customers.size})*\n`;
-    Array.from(customers.values()).forEach(customer => {
-      message += `• ${customer.name} - ${customer.phone}\n`;
-      message += `  Address: ${customer.address}\n`;
-    });
-    message += `\n`;
-    
-    // Products section
-    message += `📦 *Products Ordered*\n`;
+    // Products Ordered (consolidated)
+    message += `📦 *Products Ordered (Consolidated)*\n`;
     Array.from(products.values()).forEach(product => {
       message += `• ${product.name}: ${product.quantity} units (${product.totalValue.toLocaleString()} ${currency})\n`;
     });
     message += `\n`;
     
-    // Individual orders (if not too many)
-    if (orderCount <= 5) {
-      message += `📋 *Individual Orders*\n`;
+    // Individual Orders (detailed)
+    if (orderCount === 1) {
+      // Single order - show details
+      const order = orders[0].order;
+      message += `📋 *Order Details*\n`;
+      message += `• Order ID: ${order._id.toString().slice(-8)}\n`;
+      message += `• Product: ${order.productName}\n`;
+      message += `• Quantity: ${order.quantity}\n`;
+      message += `• Unit Price: ${order.productPrice.toLocaleString()} ${currency}\n`;
+      message += `• Total: ${order.originalTotal.toLocaleString()} ${currency}\n`;
+      if (order.orderType === 'offer') {
+        message += `• Offered Price: ${order.offeredPrice.toLocaleString()} ${currency}\n`;
+        message += `• Savings: ${(order.productPrice - order.offeredPrice).toLocaleString()} ${currency}\n`;
+      }
+      message += `\n`;
+    } else {
+      // Multiple orders - show list
+      message += `📋 *Individual Orders (${orderCount} orders)*\n`;
       orders.forEach((item, index) => {
         const order = item.order;
-        const user = item.user;
         message += `${index + 1}. Order #${order._id.toString().slice(-8)}\n`;
-        message += `   Customer: ${user.businessName || user.name}\n`;
         message += `   Product: ${order.productName}\n`;
         message += `   Quantity: ${order.quantity}\n`;
         message += `   Amount: ${order.originalTotal.toLocaleString()} ${currency}\n`;
@@ -203,42 +212,45 @@ class OrderQueueService {
         }
       });
       message += `\n`;
-    } else {
-      message += `📋 *First 5 of ${orderCount} Orders*\n`;
-      orders.slice(0, 5).forEach((item, index) => {
-        const order = item.order;
-        const user = item.user;
-        message += `${index + 1}. ${user.businessName || user.name} - ${order.productName} (${order.quantity}x)\n`;
+    }
+    
+    // Customer Notes (if any)
+    const hasNotes = orders.some(item => item.order.userNotes);
+    if (hasNotes) {
+      message += `📝 *Customer Notes*\n`;
+      orders.forEach((item, index) => {
+        if (item.order.userNotes) {
+          message += `Order #${item.order._id.toString().slice(-8)}: ${item.order.userNotes}\n`;
+        }
       });
-      if (orderCount > 5) {
-        message += `... and ${orderCount - 5} more orders\n`;
-      }
       message += `\n`;
     }
     
     // Action required
     message += `---\n`;
-    message += `💡 *Action Required*: Please log in to the dashboard to review and respond to these orders.\n`;
-    message += `🔗 View all orders: [Dashboard Link]`;
+    message += `💡 *Action Required*: Please log in to the dashboard to review and respond to this customer's orders.\n`;
+    message += `🔗 Customer: ${user.name} | Orders: ${orderCount}\n`;
     
     return message;
   }
 
   /**
-   * Send a copy of the batch notification to admin
+   * Send a copy of the batch notification to admin (for buy orders)
    */
   async sendCopyToAdmin(queueItem) {
     try {
       const admin = await whatsappService.findAdmin();
       if (admin && admin.whatsappNumber) {
-        const adminMessage = `📋 *COPY - Order Batch Summary*\n\n` +
-          `Recipient: ${queueItem.recipient.name} (${queueItem.recipient.type})\n` +
+        const adminMessage = `📋 *COPY - Customer Order Batch*\n\n` +
+          `Customer: ${queueItem.user.name}\n` +
+          `Phone: ${queueItem.user.phone}\n` +
           `Orders: ${queueItem.orders.length}\n` +
           `Total Value: ${queueItem.totalAmount.toLocaleString()} XAF\n\n` +
+          `Recipient: ${queueItem.recipient.name} (${queueItem.recipient.type})\n\n` +
           `This is a copy of the notification sent to the ${queueItem.recipient.type}.`;
         
         await whatsappService.sendMessage(admin.whatsappNumber, adminMessage);
-        console.log(`📧 Copy sent to admin for batch to ${queueItem.recipient.name}`);
+        console.log(`📧 Copy sent to admin for batch to ${queueItem.recipient.name} (Customer: ${queueItem.user.name})`);
       }
     } catch (error) {
       console.error('Failed to send copy to admin:', error);
@@ -256,6 +268,29 @@ class OrderQueueService {
       }
       await this.processBatch(key);
     }
+  }
+
+  /**
+   * Get queue statistics
+   */
+  getQueueStats() {
+    const stats = {
+      totalBatches: this.orderQueue.size,
+      batches: []
+    };
+    
+    for (const [key, value] of this.orderQueue) {
+      stats.batches.push({
+        recipient: value.recipient.name,
+        recipientType: value.recipient.type,
+        customer: value.user.name,
+        orderCount: value.orders.length,
+        totalAmount: value.totalAmount,
+        waitTime: Date.now() - value.createdAt.getTime()
+      });
+    }
+    
+    return stats;
   }
 }
 
