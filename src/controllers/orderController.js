@@ -118,7 +118,7 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
 
 /**
  * POST /api/orders
- * Create a new order
+ * Create a new order with user-specific batching
  */
 async function createOrder(req, res) {
   // Start a mongoose session for transaction
@@ -159,7 +159,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check if user exists using the _id from MongoDB
+    // Check if user exists
     const user = await User.findById(userId).select('businessName businessAddress tel whatsappNumber name');
     if (!user) {
       await session.abortTransaction();
@@ -170,7 +170,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check if product exists and get details
+    // Check if product exists
     const product = await Product.findById(productId);
     if (!product) {
       await session.abortTransaction();
@@ -225,82 +225,6 @@ async function createOrder(req, res) {
       }
     }
     
-    // ========== FIND WHATSAPP RECIPIENT (WITH ADMIN FALLBACK) ==========
-    let whatsappRecipient = null;
-    let recipientType = null;
-    let fallbackUsed = false;
-    
-    if (orderType === ORDER_TYPES.BUY) {
-      // For BUY orders: Try to find salesman first
-      const businessAddress = deliveryAddress || user.businessAddress;
-      
-      if (!businessAddress) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: 'No business address found. Cannot assign salesman.'
-        });
-      }
-      
-      // Try to find salesman for this business address
-      const salesman = await User.findOne({
-        role: 'salesman',
-        accountStatus: 'active',
-        businessAddress: { $regex: new RegExp(businessAddress, 'i') }
-      }).select('name businessAddress whatsappNumber');
-      
-      if (salesman && salesman.whatsappNumber) {
-        // Salesman found - send to salesman
-        whatsappRecipient = salesman;
-        recipientType = 'salesman';
-        console.log(`✅ Found salesman for address "${businessAddress}": ${salesman.name}`);
-      } else {
-        // No salesman found - FALLBACK TO ADMIN
-        console.log(`⚠️ No salesman found for address "${businessAddress}". Falling back to admin.`);
-        
-        const admin = await User.findOne({
-          role: 'admin',
-          accountStatus: 'active'
-        }).select('name businessAddress whatsappNumber');
-        
-        if (!admin || !admin.whatsappNumber) {
-          await session.abortTransaction();
-          session.endSession();
-          return res.status(400).json({
-            success: false,
-            message: `No salesman found for address: ${businessAddress} and no admin available. Please contact support.`,
-            businessAddress: businessAddress
-          });
-        }
-        
-        whatsappRecipient = admin;
-        recipientType = 'admin';
-        fallbackUsed = true;
-        console.log(`✅ Falling back to admin: ${admin.name}`);
-      }
-      
-    } else if (orderType === ORDER_TYPES.OFFER) {
-      // For OFFER orders: Send to admin directly
-      const admin = await User.findOne({
-        role: 'admin',
-        accountStatus: 'active'
-      }).select('name businessAddress whatsappNumber');
-      
-      if (!admin || !admin.whatsappNumber) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: 'No active admin found. Cannot process offer order.'
-        });
-      }
-      
-      whatsappRecipient = admin;
-      recipientType = 'admin';
-    }
-    // ========== END FIND RECIPIENT ==========
-    
     // Calculate totals
     const originalTotal = product.price * qty;
     const notifyAudience = getNotifyAudience(orderType);
@@ -323,7 +247,7 @@ async function createOrder(req, res) {
       whatsappNumber: user.whatsappNumber
     };
     
-    // Add delivery address if provided, otherwise use user's business address
+    // Add delivery address
     if (deliveryAddress) {
       orderData.deliveryInfo = {
         deliveryAddress,
@@ -343,120 +267,126 @@ async function createOrder(req, res) {
     // Create order within transaction
     const order = await Order.create([orderData], { session });
     
-    // Create in-app notifications within transaction
+    // Create in-app notifications
     await createOrderNotification(order[0], NOTIFICATION_TYPES.ORDER_SUBMITTED);
     
-    // If buy order, reduce stock within transaction
+    // If buy order, reduce stock
     if (orderType === ORDER_TYPES.BUY) {
       product.stock -= qty;
       await product.save({ session });
     }
     
-    // ========== SEND WHATSAPP NOTIFICATION ==========
-    let whatsappResult = null;
-    
-    try {
-      let fullMessage = '';
-      
-      if (orderType === ORDER_TYPES.BUY) {
-        // Format message for buy order
-        const messageBody = whatsappService.formatOrderMessageBody(order[0], user, 'new_order');
-        
-        if (fallbackUsed) {
-          // Message when falling back to admin (no salesman found)
-          fullMessage = `${messageBody}\n\n` +
-                        `---\n` +
-                        `⚠️ *FALLBACK NOTIFICATION* ⚠️\n` +
-                        `📍 Order Region: ${deliveryAddress || user.businessAddress}\n` +
-                        `❌ No salesman assigned to this region\n` +
-                        `👤 Assigned to Admin: ${whatsappRecipient.name}\n\n` +
-                        `💡 Action Required: Please review this order. Consider assigning a salesman to this region for future orders.`;
-        } else {
-          // Normal message to salesman
-          fullMessage = `${messageBody}\n\n` +
-                        `---\n` +
-                        `📍 Assigned Region: ${whatsappRecipient.businessAddress}\n` +
-                        `👤 Assigned Salesman: ${whatsappRecipient.name}\n` +
-                        `💡 Action Required: Please log in to the dashboard to respond to this order.`;
-        }
-        
-      } else if (orderType === ORDER_TYPES.OFFER) {
-        // Format message for offer order
-        const messageBody = whatsappService.formatOrderMessageBody(order[0], user, 'new_order');
-        fullMessage = `${messageBody}\n\n` +
-                      `---\n` +
-                      `👤 Admin: ${whatsappRecipient.name}\n` +
-                      `💡 Action Required: Please review this offer and respond through the dashboard.`;
-      }
-      
-      // Send the WhatsApp message
-      whatsappResult = await whatsappService.sendMessage(whatsappRecipient.whatsappNumber, fullMessage);
-      
-      // Check if WhatsApp message was sent successfully
-      if (!whatsappResult || !whatsappResult.success) {
-        console.error('WhatsApp message failed:', whatsappResult?.error);
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to send WhatsApp notification. Order not created.',
-          error: whatsappResult?.error || 'WhatsApp API error',
-          details: whatsappResult?.details
-        });
-      }
-      
-      console.log('✅ WhatsApp notification sent successfully:', whatsappResult);
-      
-    } catch (whatsappError) {
-      console.error('WhatsApp notification error:', whatsappError);
-      // Rollback the entire transaction
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to send WhatsApp notification. Order not created.',
-        error: whatsappError.message
-      });
-    }
-    // ========== END WHATSAPP NOTIFICATION ==========
-    
-    // Commit the transaction if everything succeeded
+    // Commit the transaction first (order is saved)
     await session.commitTransaction();
     session.endSession();
     
-    // Prepare response message
-    let responseMessage = 'Order created successfully';
-    if (fallbackUsed) {
-      responseMessage = 'Order created successfully. No salesman found for this region. Notification sent to admin.';
+    // ========== QUEUE WHATSAPP NOTIFICATION (User-specific batching) ==========
+    let queueResult = null;
+    const businessAddress = deliveryAddress || user.businessAddress;
+    
+    try {
+      if (orderType === ORDER_TYPES.BUY) {
+        // Try to find salesman for this business address
+        const salesman = await User.findOne({
+          role: 'salesman',
+          accountStatus: 'active',
+          businessAddress: { $regex: new RegExp(businessAddress, 'i') }
+        }).select('_id name businessAddress whatsappNumber');
+        
+        if (salesman && salesman.whatsappNumber) {
+          // Queue for salesman (will batch with other orders from SAME USER to this salesman)
+          queueResult = orderQueueService.addOrder(
+            order[0],
+            {
+              type: 'salesman',
+              id: salesman._id.toString(),
+              name: salesman.name,
+              whatsappNumber: salesman.whatsappNumber
+            },
+            orderType,
+            user,
+            businessAddress
+          );
+          
+          // Also queue for admin (always send copy, but also user-specific)
+          const admin = await whatsappService.findAdmin();
+          if (admin && admin.whatsappNumber) {
+            orderQueueService.addOrder(
+              order[0],
+              {
+                type: 'admin',
+                id: admin._id.toString(),
+                name: admin.name,
+                whatsappNumber: admin.whatsappNumber
+              },
+              orderType,
+              user,
+              businessAddress
+            );
+          }
+        } else {
+          // No salesman found - queue for admin only
+          const admin = await whatsappService.findAdmin();
+          if (admin && admin.whatsappNumber) {
+            queueResult = orderQueueService.addOrder(
+              order[0],
+              {
+                type: 'admin',
+                id: admin._id.toString(),
+                name: admin.name,
+                whatsappNumber: admin.whatsappNumber
+              },
+              orderType,
+              user,
+              businessAddress
+            );
+          }
+        }
+        
+      } else if (orderType === ORDER_TYPES.OFFER) {
+        // Queue for admin (user-specific)
+        const admin = await whatsappService.findAdmin();
+        if (admin && admin.whatsappNumber) {
+          queueResult = orderQueueService.addOrder(
+            order[0],
+            {
+              type: 'admin',
+              id: admin._id.toString(),
+              name: admin.name,
+              whatsappNumber: admin.whatsappNumber
+            },
+            orderType,
+            user,
+            businessAddress
+          );
+        }
+      }
+      
+      console.log(`Order queued for user ${user.businessName || user.name}:`, queueResult);
+      
+    } catch (whatsappError) {
+      console.error('Failed to queue WhatsApp notification:', whatsappError);
     }
     
     return res.status(201).json({
       success: true,
-      message: responseMessage,
+      message: 'Order created successfully. WhatsApp notifications will be sent in batch.',
       data: {
         order: order[0],
         user: {
           id: user._id,
+          name: user.name,
           businessName: user.businessName,
           businessAddress: user.businessAddress,
           tel: user.tel,
           whatsappNumber: user.whatsappNumber
         },
-        whatsappNotification: {
-          success: true,
-          recipient: {
-            name: whatsappRecipient.name,
-            role: recipientType,
-            whatsappNumber: whatsappRecipient.whatsappNumber
-          },
-          fallbackUsed: fallbackUsed,
-          messageId: whatsappResult.messageId
-        }
+        whatsappQueued: true,
+        batchInfo: queueResult
       }
     });
     
   } catch (error) {
-    // Rollback transaction on any error
     await session.abortTransaction();
     session.endSession();
     console.error('Error creating order:', error);
