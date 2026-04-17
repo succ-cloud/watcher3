@@ -4,7 +4,7 @@ const { Notification, NOTIFICATION_TYPES } = require('../models/Notification');
 const Product = require('../models/ItemsList');
 const User = require('../models/User');
 const whatsappService = require('../service/whatsappService');
-const orderQueueService = require('../services/orderQueueService');
+const orderQueueService = require('../service/orderQueueService');
 
 /**
  * Helper function to determine who should be notified
