@@ -9,10 +9,17 @@ const orderQueueService = require('../service/orderQueueService');
 /**
  * Helper function to determine who should be notified
  */
+/**
+ * Helper function to determine who should be notified
+ */
 function getNotifyAudience(orderType) {
-  return orderType === ORDER_TYPES.BUY ? NOTIFICATION_AUDIENCE.SALESMAN : NOTIFICATION_AUDIENCE.ADMIN;
+  // Preorder should be treated the same as offer - sent to admin
+  if (orderType === ORDER_TYPES.BUY) {
+    return NOTIFICATION_AUDIENCE.SALESMAN;
+  }
+  // Both OFFER and PREORDER go to admin
+  return NOTIFICATION_AUDIENCE.ADMIN;
 }
-
 /**
  * Helper function to create notifications
  */
@@ -23,24 +30,43 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
   let staffTitle, staffMessage, userTitle, userMessage;
   
   switch(eventType) {
-    case NOTIFICATION_TYPES.ORDER_SUBMITTED:
-      staffTitle = `New ${order.orderType === ORDER_TYPES.BUY ? 'Buy Order' : 'Price Offer'}`;
-      staffMessage = `${order.productName} - Quantity: ${order.quantity}${order.orderType === ORDER_TYPES.OFFER ? `, Offered: $${order.offeredPrice}` : ''}`;
-      userTitle = 'Order Received';
-      userMessage = `Your ${order.orderType} order for ${order.productName} has been received and is pending review.`;
-      break;
-      
+ case NOTIFICATION_TYPES.ORDER_SUBMITTED:
+  if (order.orderType === ORDER_TYPES.BUY) {
+    staffTitle = `New Buy Order`;
+  } else if (order.orderType === ORDER_TYPES.PREORDER) {
+    staffTitle = `New Pre-order`;
+  } else {
+    staffTitle = `New Price Offer`;
+  }
+  staffMessage = `${order.productName} - Quantity: ${order.quantity}`;
+  if (order.orderType === ORDER_TYPES.OFFER) {
+    staffMessage += `, Offered: $${order.offeredPrice}`;
+  }
+  if (order.orderType === ORDER_TYPES.PREORDER) {
+    staffMessage += `, Pre-order`;
+  }
+  userTitle = 'Order Received';
+  userMessage = `Your ${order.orderType} order for ${order.productName} has been received and is pending review.`;
+  break;
     case NOTIFICATION_TYPES.ORDER_ACCEPTED:
-      staffTitle = `Order Accepted`;
-      staffMessage = `${order.productName} (x${order.quantity}) - Order #${order._id}`;
-      userTitle = 'Order Accepted 🎉';
-      userMessage = `Your ${order.orderType} order for ${order.productName} has been accepted! ${order.orderType === ORDER_TYPES.OFFER ? `Final price: $${order.finalPrice}` : `Total: $${order.originalTotal}`}`;
-      
-      if (order.deliveryInfo && order.deliveryInfo.estimatedDeliveryDate) {
-        const estimatedDate = new Date(order.deliveryInfo.estimatedDeliveryDate).toLocaleDateString();
-        userMessage += ` Estimated delivery: ${estimatedDate}.`;
-      }
-      break;
+  staffTitle = `Order Accepted`;
+  staffMessage = `${order.productName} (x${order.quantity}) - Order #${order._id}`;
+  if (order.orderType === ORDER_TYPES.PREORDER) {
+    userTitle = 'Pre-order Accepted 🎉';
+    userMessage = `Your pre-order for ${order.productName} has been accepted!`;
+  } else if (order.orderType === ORDER_TYPES.OFFER) {
+    userTitle = 'Offer Accepted 🎉';
+    userMessage = `Your offer for ${order.productName} has been accepted! Final price: $${order.finalPrice}`;
+  } else {
+    userTitle = 'Order Accepted 🎉';
+    userMessage = `Your order for ${order.productName} has been accepted! Total: $${order.originalTotal}`;
+  }
+  
+  if (order.deliveryInfo && order.deliveryInfo.estimatedDeliveryDate) {
+    const estimatedDate = new Date(order.deliveryInfo.estimatedDeliveryDate).toLocaleDateString();
+    userMessage += ` Estimated delivery: ${estimatedDate}.`;
+  }
+  break;
       
     case NOTIFICATION_TYPES.ORDER_REJECTED:
       staffTitle = `Order Rejected`;
@@ -119,7 +145,7 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
 
 /**
  * POST /api/orders
- * Create a new order with user-specific batching
+ * Create a new order with user-specific batching (supports buy, offer, and preorder)
  */
 async function createOrder(req, res) {
   // Start a mongoose session for transaction
@@ -150,13 +176,13 @@ async function createOrder(req, res) {
       });
     }
     
-    // Validate order type
+    // Validate order type (now includes preorder)
     if (!Object.values(ORDER_TYPES).includes(orderType)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
         success: false,
-        message: 'Invalid order type. Must be "buy" or "offer"'
+        message: 'Invalid order type. Must be "buy", "offer", or "preorder"'
       });
     }
     
@@ -193,7 +219,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check stock availability for buy orders
+    // Check stock availability for buy orders only (preorder doesn't reduce stock until accepted)
     if (orderType === ORDER_TYPES.BUY && product.stock < qty) {
       await session.abortTransaction();
       session.endSession();
@@ -204,7 +230,7 @@ async function createOrder(req, res) {
       });
     }
     
-    // Validate offered price for offer orders
+    // Validate offered price for offer orders only
     if (orderType === ORDER_TYPES.OFFER) {
       const offerPrice = Number(offeredPrice);
       if (!Number.isFinite(offerPrice) || offerPrice <= 0) {
@@ -261,9 +287,11 @@ async function createOrder(req, res) {
       };
     }
     
+    // Add offered price only for offer orders
     if (orderType === ORDER_TYPES.OFFER) {
       orderData.offeredPrice = Number(offeredPrice);
     }
+    // Preorder uses full price (no offered price needed)
     
     // Create order within transaction
     const order = await Order.create([orderData], { session });
@@ -271,7 +299,7 @@ async function createOrder(req, res) {
     // Create in-app notifications
     await createOrderNotification(order[0], NOTIFICATION_TYPES.ORDER_SUBMITTED);
     
-    // If buy order, reduce stock
+    // Reduce stock only for buy orders (preorder stock is reduced when accepted)
     if (orderType === ORDER_TYPES.BUY) {
       product.stock -= qty;
       await product.save({ session });
@@ -344,8 +372,8 @@ async function createOrder(req, res) {
           }
         }
         
-      } else if (orderType === ORDER_TYPES.OFFER) {
-        // Queue for admin (user-specific)
+      } else if (orderType === ORDER_TYPES.OFFER || orderType === ORDER_TYPES.PREORDER) {
+        // Queue for admin (user-specific) - both OFFER and PREORDER go to admin
         const admin = await whatsappService.findAdmin();
         if (admin && admin.whatsappNumber) {
           queueResult = orderQueueService.addOrder(
