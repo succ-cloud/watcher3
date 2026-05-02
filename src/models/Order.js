@@ -2,7 +2,8 @@ const mongoose = require('mongoose');
 
 const ORDER_TYPES = {
   BUY: 'buy',
-  OFFER: 'offer'
+  OFFER: 'offer',
+  PREORDER:'preorder'
 };
 
 const ORDER_STATUS = {
