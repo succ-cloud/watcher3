@@ -120,6 +120,6 @@ router.get('/check/sku/:sku', productController.checkSKUExists);
 
 // ==================== PRODUCT NOTIFICATION ====================
 
-router.post('/:id/resend-notification', verifyJWT, productController.resendProductNotification);
+// router.post('/:id/resend-notification', verifyJWT, productController.resendProductNotification);
 
 module.exports = router;
