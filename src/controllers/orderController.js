@@ -6,10 +6,6 @@ const User = require('../models/User');
 const whatsappService = require('../service/whatsappService');
 const orderQueueService = require('../service/orderQueueService');
 
-/**
- * Helper function to determine who should be notified
- */
-/**
  * Helper function to determine who should be notified
  */
 function getNotifyAudience(orderType) {
@@ -20,6 +16,133 @@ function getNotifyAudience(orderType) {
   // Both OFFER and PREORDER go to admin
   return NOTIFICATION_AUDIENCE.ADMIN;
 }
+
+/**
+ * Helper function to get or create placeholder product for custom preorders
+ */
+async function getPlaceholderProduct() {
+  const PLACEHOLDER_NAME = 'Custom Preorder Item';
+  const PLACEHOLDER_DESCRIPTION = 'Placeholder product for custom preorder items not in catalog';
+  
+  try {
+    // Try to find existing placeholder
+    let placeholder = await Product.findOne({ 
+      product_name: { $regex: new RegExp(`^${PLACEHOLDER_NAME}$`, 'i') }
+    });
+    
+    if (!placeholder) {
+      // Create placeholder if it doesn't exist
+      placeholder = await Product.create({
+        product_name: PLACEHOLDER_NAME,
+        description: PLACEHOLDER_DESCRIPTION,
+        price: 0,
+        stock: 999999, // High stock for unlimited custom orders
+        category: 'preorder',
+        subcategory: 'custom',
+        isActive: true,
+        images: [],
+        specifications: 'Custom product - details provided in preorder request',
+        isPlaceholder: true // You might want to add this field to your Product model
+      });
+      console.log('✅ Created placeholder product for custom preorders:', placeholder._id);
+    }
+    
+    return placeholder;
+  } catch (error) {
+    console.error('Error getting/creating placeholder product:', error);
+    return null;
+  }
+}
+
+/**
+ * Helper function to validate custom product data
+ */
+function validateCustomProduct(customProduct, orderType) {
+  const errors = [];
+  
+  if (!customProduct || typeof customProduct !== 'object') {
+    errors.push('Custom product details are required for custom preorders');
+    return errors;
+  }
+  
+  // Required fields
+  if (!customProduct.name || customProduct.name.trim().length < 2) {
+    errors.push('Custom product name must be at least 2 characters');
+  }
+  
+  if (customProduct.name && customProduct.name.length > 200) {
+    errors.push('Custom product name cannot exceed 200 characters');
+  }
+  
+  // Optional field validations
+  if (customProduct.description && customProduct.description.length > 1000) {
+    errors.push('Product description cannot exceed 1000 characters');
+  }
+  
+  if (customProduct.specifications && customProduct.specifications.length > 2000) {
+    errors.push('Product specifications cannot exceed 2000 characters');
+  }
+  
+  // Price range validation
+  if (customProduct.targetPriceMin && customProduct.targetPriceMax) {
+    if (customProduct.targetPriceMin > customProduct.targetPriceMax) {
+      errors.push('Minimum target price cannot be greater than maximum target price');
+    }
+    if (customProduct.targetPriceMin < 0) {
+      errors.push('Minimum target price cannot be negative');
+    }
+  }
+  
+  // For preorders, additional validation
+  if (orderType === ORDER_TYPES.PREORDER) {
+    if (customProduct.quantityNeeded && customProduct.quantityNeeded < 1) {
+      errors.push('Quantity needed must be at least 1');
+    }
+  }
+  
+  return errors;
+}
+
+/**
+ * Helper function to validate preorder info
+ */
+function validatePreorderInfo(preorderInfo) {
+  const errors = [];
+  
+  if (!preorderInfo || typeof preorderInfo !== 'object') {
+    return errors; // Preorder info is optional
+  }
+  
+  if (preorderInfo.expectedDeliveryDate) {
+    const deliveryDate = new Date(preorderInfo.expectedDeliveryDate);
+    if (isNaN(deliveryDate.getTime())) {
+      errors.push('Invalid expected delivery date');
+    } else if (deliveryDate < new Date()) {
+      errors.push('Expected delivery date cannot be in the past');
+    }
+  }
+  
+  const validUrgencies = ['low', 'medium', 'high', 'urgent'];
+  if (preorderInfo.urgency && !validUrgencies.includes(preorderInfo.urgency)) {
+    errors.push(`Urgency must be one of: ${validUrgencies.join(', ')}`);
+  }
+  
+  const validShippingMethods = ['air', 'sea', 'land', 'express'];
+  if (preorderInfo.shippingMethod && !validShippingMethods.includes(preorderInfo.shippingMethod)) {
+    errors.push(`Shipping method must be one of: ${validShippingMethods.join(', ')}`);
+  }
+  
+  if (preorderInfo.quantityNeeded && preorderInfo.quantityNeeded < 1) {
+    errors.push('Quantity needed must be at least 1');
+  }
+  
+  if (preorderInfo.notes && preorderInfo.notes.length > 1000) {
+    errors.push('Preorder notes cannot exceed 1000 characters');
+  }
+  
+  return errors;
+}
+
 /**
  * Helper function to create notifications
  */
@@ -30,43 +153,61 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
   let staffTitle, staffMessage, userTitle, userMessage;
   
   switch(eventType) {
- case NOTIFICATION_TYPES.ORDER_SUBMITTED:
-  if (order.orderType === ORDER_TYPES.BUY) {
-    staffTitle = `New Buy Order`;
-  } else if (order.orderType === ORDER_TYPES.PREORDER) {
-    staffTitle = `New Pre-order`;
-  } else {
-    staffTitle = `New Price Offer`;
-  }
-  staffMessage = `${order.productName} - Quantity: ${order.quantity}`;
-  if (order.orderType === ORDER_TYPES.OFFER) {
-    staffMessage += `, Offered: $${order.offeredPrice}`;
-  }
-  if (order.orderType === ORDER_TYPES.PREORDER) {
-    staffMessage += `, Pre-order`;
-  }
-  userTitle = 'Order Received';
-  userMessage = `Your ${order.orderType} order for ${order.productName} has been received and is pending review.`;
-  break;
+    case NOTIFICATION_TYPES.ORDER_SUBMITTED:
+      if (order.orderType === ORDER_TYPES.BUY) {
+        staffTitle = `New Buy Order`;
+      } else if (order.orderType === ORDER_TYPES.PREORDER) {
+        if (order.isCustomProduct) {
+          staffTitle = `New Custom Pre-order 🆕`;
+        } else {
+          staffTitle = `New Pre-order`;
+        }
+      } else {
+        staffTitle = `New Price Offer`;
+      }
+      
+      staffMessage = `${order.productName} - Quantity: ${order.quantity}`;
+      if (order.orderType === ORDER_TYPES.OFFER) {
+        staffMessage += `, Offered: $${order.offeredPrice}`;
+      }
+      if (order.orderType === ORDER_TYPES.PREORDER && order.isCustomProduct) {
+        staffMessage += `, Custom Product: ${order.customProduct?.name || 'N/A'}`;
+      }
+      if (order.orderType === ORDER_TYPES.PREORDER) {
+        staffMessage += `, Pre-order`;
+      }
+      
+      userTitle = 'Order Received';
+      userMessage = `Your ${order.orderType} order for ${order.productName} has been received and is pending review.`;
+      
+      if (order.orderType === ORDER_TYPES.PREORDER && order.isCustomProduct) {
+        userMessage = `Your custom pre-order request for "${order.customProduct?.name}" has been received and is pending review. We'll contact you soon with pricing and availability.`;
+      }
+      break;
+      
     case NOTIFICATION_TYPES.ORDER_ACCEPTED:
-  staffTitle = `Order Accepted`;
-  staffMessage = `${order.productName} (x${order.quantity}) - Order #${order._id}`;
-  if (order.orderType === ORDER_TYPES.PREORDER) {
-    userTitle = 'Pre-order Accepted 🎉';
-    userMessage = `Your pre-order for ${order.productName} has been accepted!`;
-  } else if (order.orderType === ORDER_TYPES.OFFER) {
-    userTitle = 'Offer Accepted 🎉';
-    userMessage = `Your offer for ${order.productName} has been accepted! Final price: $${order.finalPrice}`;
-  } else {
-    userTitle = 'Order Accepted 🎉';
-    userMessage = `Your order for ${order.productName} has been accepted! Total: $${order.originalTotal}`;
-  }
-  
-  if (order.deliveryInfo && order.deliveryInfo.estimatedDeliveryDate) {
-    const estimatedDate = new Date(order.deliveryInfo.estimatedDeliveryDate).toLocaleDateString();
-    userMessage += ` Estimated delivery: ${estimatedDate}.`;
-  }
-  break;
+      staffTitle = `Order Accepted`;
+      staffMessage = `${order.productName} (x${order.quantity}) - Order #${order._id}`;
+      if (order.orderType === ORDER_TYPES.PREORDER) {
+        userTitle = 'Pre-order Accepted 🎉';
+        if (order.isCustomProduct) {
+          userMessage = `Great news! Your custom pre-order for "${order.customProduct?.name}" has been accepted! Final price: $${order.finalPrice || order.productPrice || 'to be confirmed'}`;
+        } else {
+          userMessage = `Your pre-order for ${order.productName} has been accepted!`;
+        }
+      } else if (order.orderType === ORDER_TYPES.OFFER) {
+        userTitle = 'Offer Accepted 🎉';
+        userMessage = `Your offer for ${order.productName} has been accepted! Final price: $${order.finalPrice}`;
+      } else {
+        userTitle = 'Order Accepted 🎉';
+        userMessage = `Your order for ${order.productName} has been accepted! Total: $${order.originalTotal}`;
+      }
+      
+      if (order.deliveryInfo && order.deliveryInfo.estimatedDeliveryDate) {
+        const estimatedDate = new Date(order.deliveryInfo.estimatedDeliveryDate).toLocaleDateString();
+        userMessage += ` Estimated delivery: ${estimatedDate}.`;
+      }
+      break;
       
     case NOTIFICATION_TYPES.ORDER_REJECTED:
       staffTitle = `Order Rejected`;
@@ -119,6 +260,7 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
         orderType: order.orderType,
         quantity: order.quantity,
         productId: order.productId,
+        isCustomProduct: order.isCustomProduct || false,
         deliveryStatus: order.deliveryInfo?.deliveryStatus || null
       }
     });
@@ -136,6 +278,7 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
       orderType: order.orderType,
       status: order.status,
       productId: order.productId,
+      isCustomProduct: order.isCustomProduct || false,
       deliveryInfo: order.deliveryInfo || null
     }
   });
@@ -145,7 +288,7 @@ async function createOrderNotification(order, eventType, customTitle = null, cus
 
 /**
  * POST /api/orders
- * Create a new order with user-specific batching (supports buy, offer, and preorder)
+ * Create a new order with support for catalog products and custom products (preorders)
  */
 async function createOrder(req, res) {
   // Start a mongoose session for transaction
@@ -154,57 +297,57 @@ async function createOrder(req, res) {
   
   try {
     console.log('📝 Creating order...');
-    console.log('Request body:', req.body);
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
     
     const {
+      // Basic order info
       userId,
-      productId,
+      productId,           // Can be null for custom products
       orderType,
       quantity,
       offeredPrice,
       userNotes,
-      deliveryAddress
+      deliveryAddress,
+      
+      // Custom product fields (for preorders)
+      isCustomProduct,
+      customProduct,
+      preorderInfo,
+      
+      // Additional metadata
+      source = 'web',
+      priority = 'normal',
+      tags = []
     } = req.body;
     
-    // Validation
-    if (!userId || !productId || !orderType || !quantity) {
+    // ==================== VALIDATION ====================
+    
+    // Basic required fields validation
+    if (!userId) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: userId, productId, orderType, quantity'
+        message: 'User ID is required'
       });
     }
     
-    // Validate order type (now includes preorder)
+    if (!orderType) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Order type is required'
+      });
+    }
+    
+    // Validate order type
     if (!Object.values(ORDER_TYPES).includes(orderType)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Invalid order type. Must be "buy", "offer", or "preorder"'
-      });
-    }
-    
-    // Check if user exists
-    const user = await User.findById(userId).select('businessName businessAddress tel whatsappNumber name');
-    if (!user) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-    
-    // Check if product exists
-    const product = await Product.findById(productId);
-    if (!product) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(404).json({
-        success: false,
-        message: 'Product not found'
       });
     }
     
@@ -219,18 +362,49 @@ async function createOrder(req, res) {
       });
     }
     
-    // Check stock availability for buy orders only (preorder doesn't reduce stock until accepted)
-    if (orderType === ORDER_TYPES.BUY && product.stock < qty) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient stock. Available: ${product.stock}`,
-        availableStock: product.stock
-      });
+    // Preorder-specific validation
+    if (orderType === ORDER_TYPES.PREORDER) {
+      // Check if either productId OR custom product details exist
+      const hasCatalogProduct = !!productId;
+      const hasCustomProduct = isCustomProduct === true || (customProduct && customProduct.name);
+      
+      if (!hasCatalogProduct && !hasCustomProduct) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'Preorder must specify either a catalog product ID or custom product details'
+        });
+      }
+      
+      // Validate custom product if provided
+      if (hasCustomProduct) {
+        const customProductErrors = validateCustomProduct(customProduct, orderType);
+        if (customProductErrors.length > 0) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid custom product details',
+            errors: customProductErrors
+          });
+        }
+      }
+      
+      // Validate preorder info if provided
+      const preorderErrors = validatePreorderInfo(preorderInfo);
+      if (preorderErrors.length > 0) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid preorder information',
+          errors: preorderErrors
+        });
+      }
     }
     
-    // Validate offered price for offer orders only
+    // Offer order validation
     if (orderType === ORDER_TYPES.OFFER) {
       const offerPrice = Number(offeredPrice);
       if (!Number.isFinite(offerPrice) || offerPrice <= 0) {
@@ -241,8 +415,70 @@ async function createOrder(req, res) {
           message: 'Valid offered price is required for offer orders'
         });
       }
+    }
+    
+    // ==================== CHECK USER ====================
+    const user = await User.findById(userId).select('businessName businessAddress tel whatsappNumber name email');
+    if (!user) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // ==================== PREPARE ORDER DATA ====================
+    let product = null;
+    let productName = '';
+    let productPrice = null;
+    let originalTotal = null;
+    let placeholderProductId = null;
+    let isCustom = false;
+    let customProductData = null;
+    let preorderInfoData = null;
+    
+    // Case 1: Catalog product (existing product in database)
+    if (productId && !isCustomProduct) {
+      product = await Product.findById(productId);
+      if (!product) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({
+          success: false,
+          message: 'Product not found'
+        });
+      }
       
-      if (offerPrice >= product.price) {
+      productName = product.product_name;
+      productPrice = product.price;
+      originalTotal = product.price * qty;
+      isCustom = false;
+      
+      // Stock check for BUY orders
+      if (orderType === ORDER_TYPES.BUY) {
+        if (product.stock < qty) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient stock. Available: ${product.stock}`,
+            availableStock: product.stock
+          });
+        }
+      }
+      
+      // For preorders of catalog products, we don't reduce stock yet
+      if (orderType === ORDER_TYPES.PREORDER) {
+        // Check if enough stock will be available (optional warning)
+        if (product.stock < qty) {
+          console.warn(`⚠️ Preorder quantity (${qty}) exceeds current stock (${product.stock}) for product ${product.product_name}`);
+          // Don't block, just warn - admin will need to procure more
+        }
+      }
+      
+      // For offer orders, validate offered price is less than product price
+      if (orderType === ORDER_TYPES.OFFER && offeredPrice >= product.price) {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({
@@ -250,68 +486,173 @@ async function createOrder(req, res) {
           message: 'Offered price must be less than the original price to negotiate'
         });
       }
+    } 
+    // Case 2: Custom product (for preorders)
+    else if (isCustomProduct || customProduct) {
+      isCustom = true;
+      
+      // Get or create placeholder product for database reference integrity
+      const placeholder = await getPlaceholderProduct();
+      if (placeholder) {
+        placeholderProductId = placeholder._id;
+      } else {
+        console.error('Could not create/get placeholder product');
+        // Continue anyway - we'll still create the order without placeholder
+      }
+      
+      // Set product name from custom product data
+      productName = customProduct.name;
+      productPrice = customProduct.targetPriceMin || null;
+      originalTotal = null; // No total until price is negotiated
+      
+      // Prepare custom product data
+      customProductData = {
+        name: customProduct.name,
+        description: customProduct.description || null,
+        specifications: customProduct.specifications || null,
+        brand: customProduct.brand || null,
+        model: customProduct.model || null,
+        targetPriceMin: customProduct.targetPriceMin || null,
+        targetPriceMax: customProduct.targetPriceMax || null,
+        color: customProduct.color || null,
+        size: customProduct.size || null,
+        weight: customProduct.weight || null,
+        condition: customProduct.condition || 'new',
+        warranty: customProduct.warranty || null
+      };
+      
+      // Prepare preorder info
+      if (preorderInfo) {
+        preorderInfoData = {
+          expectedDeliveryDate: preorderInfo.expectedDeliveryDate ? new Date(preorderInfo.expectedDeliveryDate) : null,
+          sourceCountry: preorderInfo.sourceCountry || null,
+          quantityNeeded: preorderInfo.quantityNeeded || qty,
+          urgency: preorderInfo.urgency || 'medium',
+          preferredSupplier: preorderInfo.preferredSupplier || null,
+          shippingMethod: preorderInfo.shippingMethod || null,
+          customsClearance: preorderInfo.customsClearance || false,
+          qualityRequirements: preorderInfo.qualityRequirements || null,
+          certificationNeeded: preorderInfo.certificationNeeded || [],
+          notes: preorderInfo.notes || null
+        };
+      } else {
+        preorderInfoData = {
+          quantityNeeded: qty,
+          urgency: 'medium',
+          customsClearance: false,
+          certificationNeeded: []
+        };
+      }
+    } 
+    else {
+      // Neither catalog product nor custom product provided
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Either productId or custom product details are required'
+      });
     }
     
-    // Calculate totals
-    const originalTotal = product.price * qty;
+    // ==================== CREATE ORDER ====================
     const notifyAudience = getNotifyAudience(orderType);
     
-    // Create order with business details snapshot
+    // Prepare delivery address
+    let deliveryAddressFinal = deliveryAddress;
+    if (!deliveryAddressFinal && user.businessAddress) {
+      deliveryAddressFinal = user.businessAddress;
+    }
+    
+    // Build order data object
     const orderData = {
+      // User reference
       userId: user._id,
-      productId,
-      productName: product.product_name,
-      productPrice: product.price,
-      orderType,
-      quantity: qty,
-      originalTotal,
-      notifyAudience,
-      userNotes: userNotes || '',
-      status: ORDER_STATUS.PENDING,
+      
+      // Business snapshot
       businessName: user.businessName,
       businessAddress: user.businessAddress,
       tel: user.tel,
-      whatsappNumber: user.whatsappNumber
+      whatsappNumber: user.whatsappNumber,
+      
+      // Order details
+      productId: productId || placeholderProductId,
+      productName,
+      productPrice,
+      orderType,
+      quantity: qty,
+      
+      // Product source tracking
+      productSource: isCustom ? PRODUCT_SOURCE.CUSTOM : PRODUCT_SOURCE.CATALOG,
+      isCustomProduct: isCustom,
+      
+      // Price information
+      originalTotal,
+      finalPrice: null,
+      
+      // Custom product data (if applicable)
+      customProduct: customProductData,
+      placeholderProductId: placeholderProductId || null,
+      
+      // Preorder info (if applicable)
+      preorderInfo: preorderInfoData,
+      
+      // Status and handling
+      status: ORDER_STATUS.PENDING,
+      notifyAudience,
+      userNotes: userNotes || null,
+      
+      // Delivery info
+      deliveryInfo: {
+        deliveryAddress: deliveryAddressFinal,
+        deliveryStatus: 'pending'
+      },
+      
+      // Metadata
+      metadata: {
+        source,
+        priority: priority || 'normal',
+        tags: tags || [],
+        userAgent: req.headers['user-agent'] || null,
+        ipAddress: req.ip || req.connection.remoteAddress || null
+      }
     };
     
-    // Add delivery address
-    if (deliveryAddress) {
-      orderData.deliveryInfo = {
-        deliveryAddress,
-        deliveryStatus: 'pending'
-      };
-    } else if (user.businessAddress) {
-      orderData.deliveryInfo = {
-        deliveryAddress: user.businessAddress,
-        deliveryStatus: 'pending'
-      };
-    }
-    
-    // Add offered price only for offer orders
+    // Add offered price for offer orders
     if (orderType === ORDER_TYPES.OFFER) {
       orderData.offeredPrice = Number(offeredPrice);
     }
-    // Preorder uses full price (no offered price needed)
     
-    // Create order within transaction
-    const order = await Order.create([orderData], { session });
-    
-    // Create in-app notifications
-    await createOrderNotification(order[0], NOTIFICATION_TYPES.ORDER_SUBMITTED);
-    
-    // Reduce stock only for buy orders (preorder stock is reduced when accepted)
-    if (orderType === ORDER_TYPES.BUY) {
-      product.stock -= qty;
-      await product.save({ session });
+    // Add expected delivery date to delivery info if provided in preorder
+    if (orderType === ORDER_TYPES.PREORDER && preorderInfoData?.expectedDeliveryDate) {
+      orderData.deliveryInfo.estimatedDeliveryDate = preorderInfoData.expectedDeliveryDate;
     }
     
-    // Commit the transaction first (order is saved)
+    // Create the order
+    const order = await Order.create([orderData], { session });
+    const createdOrder = order[0];
+    
+    console.log(`✅ Order created successfully: ${createdOrder._id}`);
+    console.log(`   - Type: ${orderType}`);
+    console.log(`   - Product source: ${isCustom ? 'Custom' : 'Catalog'}`);
+    console.log(`   - Quantity: ${qty}`);
+    
+    // ==================== CREATE NOTIFICATIONS ====================
+    await createOrderNotification(createdOrder, NOTIFICATION_TYPES.ORDER_SUBMITTED);
+    
+    // ==================== HANDLE STOCK (only for BUY orders) ====================
+    if (orderType === ORDER_TYPES.BUY && product) {
+      product.stock -= qty;
+      await product.save({ session });
+      console.log(`📦 Stock reduced for product ${product.product_name}: ${product.stock} remaining`);
+    }
+    
+    // ==================== COMMIT TRANSACTION ====================
     await session.commitTransaction();
     session.endSession();
     
-    // ========== QUEUE WHATSAPP NOTIFICATION (User-specific batching) ==========
+    // ==================== QUEUE WHATSAPP NOTIFICATIONS ====================
     let queueResult = null;
-    const businessAddress = deliveryAddress || user.businessAddress;
+    const businessAddressForQueue = deliveryAddressFinal || user.businessAddress;
     
     try {
       if (orderType === ORDER_TYPES.BUY) {
@@ -319,13 +660,13 @@ async function createOrder(req, res) {
         const salesman = await User.findOne({
           role: 'salesman',
           accountStatus: 'active',
-          businessAddress: { $regex: new RegExp(businessAddress, 'i') }
+          businessAddress: { $regex: new RegExp(businessAddressForQueue, 'i') }
         }).select('_id name businessAddress whatsappNumber');
         
         if (salesman && salesman.whatsappNumber) {
-          // Queue for salesman (will batch with other orders from SAME USER to this salesman)
+          // Queue for salesman
           queueResult = orderQueueService.addOrder(
-            order[0],
+            createdOrder,
             {
               type: 'salesman',
               id: salesman._id.toString(),
@@ -334,14 +675,14 @@ async function createOrder(req, res) {
             },
             orderType,
             user,
-            businessAddress
+            businessAddressForQueue
           );
           
-          // Also queue for admin (always send copy, but also user-specific)
+          // Also queue for admin
           const admin = await whatsappService.findAdmin();
           if (admin && admin.whatsappNumber) {
             orderQueueService.addOrder(
-              order[0],
+              createdOrder,
               {
                 type: 'admin',
                 id: admin._id.toString(),
@@ -350,7 +691,7 @@ async function createOrder(req, res) {
               },
               orderType,
               user,
-              businessAddress
+              businessAddressForQueue
             );
           }
         } else {
@@ -358,7 +699,7 @@ async function createOrder(req, res) {
           const admin = await whatsappService.findAdmin();
           if (admin && admin.whatsappNumber) {
             queueResult = orderQueueService.addOrder(
-              order[0],
+              createdOrder,
               {
                 type: 'admin',
                 id: admin._id.toString(),
@@ -367,17 +708,16 @@ async function createOrder(req, res) {
               },
               orderType,
               user,
-              businessAddress
+              businessAddressForQueue
             );
           }
         }
-        
       } else if (orderType === ORDER_TYPES.OFFER || orderType === ORDER_TYPES.PREORDER) {
-        // Queue for admin (user-specific) - both OFFER and PREORDER go to admin
+        // Queue for admin (both OFFER and PREORDER go to admin)
         const admin = await whatsappService.findAdmin();
         if (admin && admin.whatsappNumber) {
           queueResult = orderQueueService.addOrder(
-            order[0],
+            createdOrder,
             {
               type: 'admin',
               id: admin._id.toString(),
@@ -386,22 +726,33 @@ async function createOrder(req, res) {
             },
             orderType,
             user,
-            businessAddress
+            businessAddressForQueue
           );
         }
       }
       
-      console.log(`Order queued for user ${user.businessName || user.name}:`, queueResult);
-      
+      console.log(`📱 WhatsApp notifications queued for user ${user.businessName || user.name}:`, queueResult);
     } catch (whatsappError) {
       console.error('Failed to queue WhatsApp notification:', whatsappError);
+      // Don't fail the order creation if WhatsApp queue fails
     }
     
-    return res.status(201).json({
+    // ==================== RETURN RESPONSE ====================
+    const responseData = {
       success: true,
-      message: 'Order created successfully. WhatsApp notifications will be sent in batch.',
+      message: orderType === ORDER_TYPES.PREORDER 
+        ? (isCustom ? 'Custom pre-order created successfully' : 'Pre-order created successfully')
+        : (orderType === ORDER_TYPES.OFFER ? 'Offer submitted successfully' : 'Order created successfully'),
       data: {
-        order: order[0],
+        order: {
+          id: createdOrder._id,
+          orderType: createdOrder.orderType,
+          status: createdOrder.status,
+          productName: createdOrder.productName,
+          quantity: createdOrder.quantity,
+          isCustomProduct: createdOrder.isCustomProduct,
+          createdAt: createdOrder.createdAt
+        },
         user: {
           id: user._id,
           name: user.name,
@@ -409,16 +760,64 @@ async function createOrder(req, res) {
           businessAddress: user.businessAddress,
           tel: user.tel,
           whatsappNumber: user.whatsappNumber
-        },
-        whatsappQueued: true,
-        batchInfo: queueResult
+        }
       }
-    });
+    };
+    
+    // Add custom product details to response if applicable
+    if (isCustom && customProductData) {
+      responseData.data.customProduct = {
+        name: customProductData.name,
+        description: customProductData.description,
+        targetPriceRange: customProductData.targetPriceMin && customProductData.targetPriceMax
+          ? `${customProductData.targetPriceMin} - ${customProductData.targetPriceMax}`
+          : null
+      };
+    }
+    
+    // Add preorder info to response if applicable
+    if (orderType === ORDER_TYPES.PREORDER && preorderInfoData) {
+      responseData.data.preorderInfo = {
+        expectedDeliveryDate: preorderInfoData.expectedDeliveryDate,
+        urgency: preorderInfoData.urgency,
+        quantityNeeded: preorderInfoData.quantityNeeded
+      };
+    }
+    
+    // Add WhatsApp queue info if available
+    if (queueResult) {
+      responseData.data.whatsappQueued = true;
+      responseData.data.batchInfo = queueResult;
+    }
+    
+    return res.status(201).json(responseData);
     
   } catch (error) {
+    // Rollback transaction on error
     await session.abortTransaction();
     session.endSession();
-    console.error('Error creating order:', error);
+    
+    console.error('❌ Error creating order:', error);
+    
+    // Handle duplicate key errors or other MongoDB errors
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'Duplicate order detected. Please try again.',
+        error: error.message
+      });
+    }
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: validationErrors
+      });
+    }
+    
     return res.status(500).json({
       success: false,
       message: 'Failed to create order',
