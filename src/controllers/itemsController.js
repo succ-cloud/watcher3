@@ -1,6 +1,6 @@
 const Product = require('../models/ItemsList'); // Make sure this path is correct
 const { cloudinary } = require('../config/cloudinary');
-const productWhatsappService = require('../service/productWhatsappService');
+const productWhatsappService = require('../service/productWhatsapp');
 const broadcastQueue = require('../service/whatsappBroadcastQueue');
 
 // ==================== BASIC CRUD OPERATIONS ====================
