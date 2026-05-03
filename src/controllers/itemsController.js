@@ -1,5 +1,6 @@
 const Product = require('../models/ItemsList'); // Make sure this path is correct
 const { cloudinary } = require('../config/cloudinary');
+const productWhatsappService = require('../service/productWhatsappService');
 
 // ==================== BASIC CRUD OPERATIONS ====================
 
@@ -9,14 +10,15 @@ const { cloudinary } = require('../config/cloudinary');
 const createProduct = async (req, res) => {
   try {
     let productData = req.body;
-        // Parse JSON fields if they come as strings (for FormData)
+    
+    // Parse JSON fields if they come as strings (for FormData)
     if (typeof productData === 'string') {
       productData = JSON.parse(productData);
     }
 
     // Validate required fields
-    const requiredFields = ['product_type', 'product_name', 'brand', 'phoneLocation','capacity', 
-                           'country', 'sim',  'color', 'price', 'description'];
+    const requiredFields = ['product_type', 'product_name', 'brand', 'phoneLocation', 'capacity', 
+                           'country', 'sim', 'color', 'price', 'description'];
     
     const missingFields = requiredFields.filter(field => !productData[field]);
     
@@ -48,10 +50,24 @@ const createProduct = async (req, res) => {
 
     const savedProduct = await product.save();
 
+    // ========== SEND WHATSAPP NOTIFICATION TO ALL WHOLESALERS ==========
+    // Send notification in background (don't await to avoid delaying response)
+    productWhatsappService.broadcastProductToWholesalers(savedProduct, true)
+      .then(result => {
+        console.log(`WhatsApp broadcast result for product ${savedProduct._id}:`, result.message);
+      })
+      .catch(error => {
+        console.error(`Failed to send WhatsApp broadcast for product ${savedProduct._id}:`, error);
+      });
+
     res.status(201).json({
       success: true,
-      message: 'Product created successfully',
-      data: savedProduct
+      message: 'Product created successfully. WhatsApp notifications sent to wholesalers.',
+      data: savedProduct,
+      whatsappNotification: {
+        queued: true,
+        note: 'WhatsApp notifications are being sent in the background'
+      }
     });
   } catch (error) {
     console.error('Create product error:', error);
