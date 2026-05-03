@@ -37,15 +37,16 @@ router.get(
 router.post(
   '/broadcast/force',
   verifyJWT,
-  productController.forceBroadcastNow  // ✅ Must be forceBroadcastNow (not forceBroadcastNo)
+  productController.forceBroadcastNow  
+  // ✅ Must be forceBroadcastNow (not forceBroadcastNo)
 );
 
 // If you have clear queue route
-router.delete(
-  '/broadcast/queue',
-  verifyJWT,
-  productController.clearBroadcastQueue  // ✅ Make sure this exists or remove the route
-);
+// router.delete(
+//   '/broadcast/queue',
+//   verifyJWT,
+//   productController.clearBroadcastQueue 
+// );
 
 // ==================== PRODUCT CRUD ROUTES ====================
 
