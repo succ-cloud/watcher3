@@ -1,11 +1,12 @@
 const mongoose = require('mongoose');
-const { Order, ORDER_TYPES, ORDER_STATUS, NOTIFICATION_AUDIENCE } = require('../models/Order');
+const { Order, ORDER_TYPES, ORDER_STATUS, NOTIFICATION_AUDIENCE, PRODUCT_SOURCE } = require('../models/Order');
 const { Notification, NOTIFICATION_TYPES } = require('../models/Notification');
 const Product = require('../models/ItemsList');
 const User = require('../models/User');
 const whatsappService = require('../service/whatsappService');
 const orderQueueService = require('../service/orderQueueService');
 
+/**
  * Helper function to determine who should be notified
  */
 function getNotifyAudience(orderType) {
