@@ -1618,6 +1618,7 @@ const checkSKUExists = async (req, res) => {
 };
 
 // Export all functions
+// Export all functions
 module.exports = {
   // Basic CRUD
   createProduct,
@@ -1626,8 +1627,11 @@ module.exports = {
   updateProduct,
   patchProduct,
   deleteProduct,
+  
+  // WhatsApp Broadcast Queue
   getBroadcastQueueStatus,
-  forceBroadcastNow,
+  forceBroadcastNow,  // ✅ Make sure this is forceBroadcastNow (not forceBroadcastNo)
+  
   // Search
   searchProductsByName,
   advancedSearch,
