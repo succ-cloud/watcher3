@@ -1664,6 +1664,133 @@ async function getNotifications(req, res) {
     });
   }
 }
+/**
+ * PATCH /api/orders/:id/cancel
+ * Cancel an order (handles stock restoration for catalog products only)
+ */
+async function cancelOrder(req, res) {
+  try {
+    const { id } = req.params;
+    const { userId, reason } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'userId is required'
+      });
+    }
+    
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    // Check if user owns this order
+    if (order.userId.toString() !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only cancel your own orders'
+      });
+    }
+    
+    // Check if order can be cancelled
+    if (order.status !== ORDER_STATUS.PENDING) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot cancel order with status: ${order.status}. Only pending orders can be cancelled.`
+      });
+    }
+    
+    // ==================== RESTORE STOCK (Only for catalog products) ====================
+    let stockRestoreInfo = null;
+    
+    // Only restore stock if this is a catalog product (not custom) AND it's a BUY order
+    // Note: Preorders don't reduce stock until accepted, so no need to restore
+    if (!order.isCustomProduct && order.orderType === ORDER_TYPES.BUY && order.productId) {
+      const product = await Product.findById(order.productId);
+      if (product) {
+        product.stock += order.quantity;
+        await product.save();
+        
+        stockRestoreInfo = {
+          productId: product._id,
+          productName: product.product_name,
+          quantityRestored: order.quantity,
+          newStockLevel: product.stock
+        };
+        
+        console.log(`✅ Stock restored for product ${product.product_name}:`);
+        console.log(`   - Order ID: ${order._id}`);
+        console.log(`   - Quantity restored: ${order.quantity}`);
+        console.log(`   - New stock level: ${product.stock}`);
+      } else {
+        console.warn(`⚠️ Product not found for stock restoration: ${order.productId}`);
+      }
+    } else if (order.isCustomProduct) {
+      console.log(`📝 Custom preorder cancelled - no stock to restore`);
+    } else if (order.orderType !== ORDER_TYPES.BUY) {
+      console.log(`📝 ${order.orderType} order cancelled - no stock to restore (stock not deducted until acceptance)`);
+    }
+    
+    // ==================== CANCEL THE ORDER ====================
+    await order.cancel();
+    
+    // Add cancellation reason to user notes if provided
+    if (reason) {
+      order.userNotes = reason;
+      await order.save();
+    }
+    
+    // ==================== CREATE NOTIFICATIONS ====================
+    await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_CANCELLED);
+    
+    // ==================== PREPARE RESPONSE ====================
+    const responseData = {
+      success: true,
+      message: order.isCustomProduct 
+        ? 'Custom pre-order cancelled successfully' 
+        : 'Order cancelled successfully',
+      data: {
+        order: {
+          id: order._id,
+          orderType: order.orderType,
+          status: order.status,
+          productName: order.productName,
+          quantity: order.quantity,
+          isCustomProduct: order.isCustomProduct,
+          cancelledAt: order.updatedAt
+        },
+        cancellationReason: reason || null
+      }
+    };
+    
+    // Add stock restore info if available
+    if (stockRestoreInfo) {
+      responseData.data.stockRestore = stockRestoreInfo;
+    }
+    
+    // Add custom product details if applicable
+    if (order.isCustomProduct && order.customProduct) {
+      responseData.data.customProduct = {
+        name: order.customProduct.name,
+        description: order.customProduct.description
+      };
+    }
+    
+    return res.json(responseData);
+    
+  } catch (error) {
+    console.error('Error cancelling order:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to cancel order',
+      error: error.message
+    });
+  }
+}
 
 /**
  * PATCH /api/notifications/:id/read
