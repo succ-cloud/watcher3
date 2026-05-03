@@ -990,9 +990,10 @@ async function acceptOrder(req, res) {
   }
 }
 
+
 /**
  * PATCH /api/orders/:id/reject
- * Reject an order
+ * Reject an order (handles both catalog products and custom preorders)
  */
 async function rejectOrder(req, res) {
   try {
@@ -1006,7 +1007,8 @@ async function rejectOrder(req, res) {
       });
     }
     
-    const order = await Order.findById(id);
+    // Find order and populate user info
+    const order = await Order.findById(id).populate('userId', 'name businessName tel whatsappNumber businessAddress');
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -1014,27 +1016,126 @@ async function rejectOrder(req, res) {
       });
     }
     
+    // Check if order is pending
     if (order.status !== ORDER_STATUS.PENDING) {
       return res.status(400).json({
         success: false,
-        message: `Cannot reject order with status: ${order.status}`
+        message: `Cannot reject order with status: ${order.status}. Only pending orders can be rejected.`
       });
     }
     
+    // Check if staff has permission
+    const staff = await User.findById(handledById);
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: 'Staff user not found'
+      });
+    }
+    
+    // Verify the staff is authorized for this order type
+    if (order.orderType === ORDER_TYPES.BUY && staff.role !== 'salesman' && staff.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only salesmen or admins can reject buy orders'
+      });
+    }
+    
+    if ((order.orderType === ORDER_TYPES.OFFER || order.orderType === ORDER_TYPES.PREORDER) && staff.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only admins can reject offer or preorder requests'
+      });
+    }
+    
+    // ==================== NOTE: NO STOCK RESTORATION NEEDED ====================
+    // Stock is only deducted when an order is ACCEPTED, not when it's rejected.
+    // For BUY orders, stock is deducted at acceptance time.
+    // For PREORDER and OFFER orders, stock is never deducted (only when converted to buy).
+    // Therefore, rejecting an order doesn't require any stock changes.
+    
+    if (order.isCustomProduct) {
+      console.log(`📝 Custom preorder rejected - no stock to restore`);
+      console.log(`   - Order ID: ${order._id}`);
+      console.log(`   - Custom Product: ${order.customProduct?.name || order.productName}`);
+      console.log(`   - Rejection reason: ${rejectionReason}`);
+    } else if (order.orderType === ORDER_TYPES.BUY) {
+      console.log(`📝 Buy order rejected - no stock to restore (stock not deducted yet)`);
+      console.log(`   - Order ID: ${order._id}`);
+      console.log(`   - Product: ${order.productName}`);
+      console.log(`   - Rejection reason: ${rejectionReason}`);
+    } else {
+      console.log(`📝 ${order.orderType} order rejected - no stock changes needed`);
+      console.log(`   - Order ID: ${order._id}`);
+      console.log(`   - Rejection reason: ${rejectionReason}`);
+    }
+    
+    // ==================== REJECT THE ORDER ====================
     await order.reject(handledById, rejectionReason);
     
+    // Update staff notes if provided
     if (staffNotes) {
       order.staffNotes = staffNotes;
       await order.save();
     }
     
+    // ==================== CREATE NOTIFICATIONS ====================
     await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_REJECTED);
     
-    return res.json({
+    // ==================== PREPARE RESPONSE ====================
+    const responseData = {
       success: true,
-      message: 'Order rejected successfully',
-      data: order
-    });
+      message: order.isCustomProduct 
+        ? 'Custom pre-order rejected successfully' 
+        : (order.orderType === ORDER_TYPES.PREORDER 
+          ? 'Pre-order rejected successfully' 
+          : 'Order rejected successfully'),
+      data: {
+        order: {
+          id: order._id,
+          orderType: order.orderType,
+          status: order.status,
+          productName: order.productName,
+          quantity: order.quantity,
+          isCustomProduct: order.isCustomProduct || false,
+          rejectionReason: order.rejectionReason,
+          rejectedAt: order.handledAt
+        },
+        staff: {
+          id: staff._id,
+          name: staff.name,
+          role: staff.role
+        }
+      }
+    };
+    
+    // Add custom product details if applicable
+    if (order.isCustomProduct && order.customProduct) {
+      responseData.data.customProduct = {
+        name: order.customProduct.name,
+        description: order.customProduct.description,
+        requestedQuantity: order.quantity,
+        targetPriceRange: order.customProduct.targetPriceMin && order.customProduct.targetPriceMax
+          ? `${order.customProduct.targetPriceMin} - ${order.customProduct.targetPriceMax}`
+          : null
+      };
+    }
+    
+    // Add preorder info if applicable
+    if (order.orderType === ORDER_TYPES.PREORDER && order.preorderInfo) {
+      responseData.data.preorderInfo = {
+        urgency: order.preorderInfo.urgency,
+        expectedDeliveryDate: order.preorderInfo.expectedDeliveryDate,
+        quantityNeeded: order.preorderInfo.quantityNeeded
+      };
+    }
+    
+    // Add staff notes if provided
+    if (staffNotes) {
+      responseData.data.staffNotes = staffNotes;
+    }
+    
+    return res.json(responseData);
     
   } catch (error) {
     console.error('Error rejecting order:', error);
@@ -1047,22 +1148,32 @@ async function rejectOrder(req, res) {
 }
 
 /**
- * PATCH /api/orders/:id/cancel
- * Cancel an order
+ * PATCH /api/orders/:id/accept
+ * Accept an order and reduce stock (handles both catalog and custom products)
  */
-async function cancelOrder(req, res) {
+async function acceptOrder(req, res) {
   try {
     const { id } = req.params;
-    const { userId, reason } = req.body;
+    const { 
+      handledById, 
+      finalPrice, 
+      staffNotes,
+      estimatedDeliveryDate,
+      deliveryAddress,
+      trackingNumber,
+      courierService,
+      deliveryNotes
+    } = req.body;
     
-    if (!userId) {
+    if (!handledById) {
       return res.status(400).json({
         success: false,
-        message: 'userId is required'
+        message: 'handledById is required'
       });
     }
     
-    const order = await Order.findById(id);
+    // Find order and populate user info
+    const order = await Order.findById(id).populate('userId', 'name businessName tel whatsappNumber businessAddress');
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -1070,49 +1181,198 @@ async function cancelOrder(req, res) {
       });
     }
     
-    if (order.userId.toString() !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'You can only cancel your own orders'
-      });
-    }
-    
+    // Check if order is pending
     if (order.status !== ORDER_STATUS.PENDING) {
       return res.status(400).json({
         success: false,
-        message: `Cannot cancel order with status: ${order.status}`
+        message: `Cannot accept order with status: ${order.status}`
       });
     }
     
-    await order.cancel();
-    
-    if (reason) {
-      order.userNotes = reason;
-      await order.save();
+    // Check if staff has permission
+    const staff = await User.findById(handledById);
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: 'Staff user not found'
+      });
     }
     
-    await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_CANCELLED);
+    // Verify the staff is authorized for this order type
+    if (order.orderType === ORDER_TYPES.BUY && staff.role !== 'salesman' && staff.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only salesmen or admins can accept buy orders'
+      });
+    }
     
-    // Restore stock for cancelled buy orders
-    if (order.orderType === ORDER_TYPES.BUY) {
-      const product = await Product.findById(order.productId);
-      if (product) {
-        product.stock += order.quantity;
-        await product.save();
+    if ((order.orderType === ORDER_TYPES.OFFER || order.orderType === ORDER_TYPES.PREORDER) && staff.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only admins can accept offer or preorder requests'
+      });
+    }
+    
+    // ==================== STOCK DEDUCTION (Only for catalog products) ====================
+    let product = null;
+    let stockUpdateInfo = null;
+    
+    // Only attempt stock deduction if this is a catalog product (not custom)
+    if (!order.isCustomProduct && order.productId && order.productSource === 'catalog') {
+      product = await Product.findById(order.productId);
+      
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          message: 'Product not found in catalog'
+        });
+      }
+      
+      // Check if enough stock is available
+      if (product.stock < order.quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock. Available: ${product.stock}, Required: ${order.quantity}`,
+          availableStock: product.stock,
+          requiredQuantity: order.quantity
+        });
+      }
+      
+      // Deduct the stock
+      product.stock -= order.quantity;
+      await product.save();
+      
+      stockUpdateInfo = {
+        productId: product._id,
+        productName: product.product_name,
+        quantityDeducted: order.quantity,
+        remainingStock: product.stock
+      };
+      
+      console.log(`✅ Stock deducted for product ${product.product_name}:`);
+      console.log(`   - Order ID: ${order._id}`);
+      console.log(`   - Quantity deducted: ${order.quantity}`);
+      console.log(`   - Remaining stock: ${product.stock}`);
+    } else {
+      // For custom products, no stock deduction needed
+      console.log(`📝 Custom preorder accepted - no stock deduction required`);
+      console.log(`   - Order ID: ${order._id}`);
+      console.log(`   - Custom Product: ${order.customProduct?.name || order.productName}`);
+    }
+    
+    // ==================== PREPARE DELIVERY DATA ====================
+    const deliveryData = {};
+    if (estimatedDeliveryDate) {
+      deliveryData.estimatedDeliveryDate = new Date(estimatedDeliveryDate);
+    }
+    if (deliveryAddress) {
+      deliveryData.deliveryAddress = deliveryAddress;
+    }
+    if (trackingNumber) {
+      deliveryData.trackingNumber = trackingNumber;
+    }
+    if (courierService) {
+      deliveryData.courierService = courierService;
+    }
+    if (deliveryNotes) {
+      deliveryData.deliveryNotes = deliveryNotes;
+    }
+    if (Object.keys(deliveryData).length > 0) {
+      deliveryData.deliveryStatus = 'processing';
+    }
+    
+    // For custom preorders, set a default estimated delivery date if not provided
+    if (order.isCustomProduct && !estimatedDeliveryDate && order.preorderInfo?.expectedDeliveryDate) {
+      deliveryData.estimatedDeliveryDate = order.preorderInfo.expectedDeliveryDate;
+    }
+    
+    // ==================== ACCEPT THE ORDER ====================
+    // Calculate final price for preorders/offers
+    let finalPriceToUse = finalPrice;
+    
+    // If this is a custom preorder and no final price provided, use target price range
+    if (order.isCustomProduct && !finalPriceToUse) {
+      if (order.customProduct?.targetPriceMin) {
+        finalPriceToUse = order.customProduct.targetPriceMin;
+        console.log(`⚠️ No final price provided for custom preorder, using minimum target price: ${finalPriceToUse}`);
+      } else {
+        console.log(`⚠️ No final price provided for custom preorder, admin should update price later`);
       }
     }
     
-    return res.json({
+    await order.accept(handledById, finalPriceToUse, Object.keys(deliveryData).length > 0 ? deliveryData : null);
+    
+    // Update staff notes if provided
+    if (staffNotes) {
+      order.staffNotes = staffNotes;
+      await order.save();
+    }
+    
+    // ==================== CREATE NOTIFICATIONS ====================
+    await createOrderNotification(order, NOTIFICATION_TYPES.ORDER_ACCEPTED);
+    
+    // ==================== PREPARE RESPONSE ====================
+    const responseData = {
       success: true,
-      message: 'Order cancelled successfully',
-      data: order
-    });
+      message: order.isCustomProduct 
+        ? 'Custom pre-order accepted successfully' 
+        : 'Order accepted successfully',
+      data: {
+        order: {
+          id: order._id,
+          orderType: order.orderType,
+          status: order.status,
+          productName: order.productName,
+          quantity: order.quantity,
+          isCustomProduct: order.isCustomProduct,
+          finalPrice: order.finalPrice,
+          originalTotal: order.originalTotal
+        },
+        user: {
+          id: order.userId._id,
+          name: order.userId.name,
+          businessName: order.userId.businessName,
+          tel: order.userId.tel,
+          whatsappNumber: order.userId.whatsappNumber,
+          businessAddress: order.userId.businessAddress
+        },
+        staff: {
+          id: staff._id,
+          name: staff.name,
+          role: staff.role
+        }
+      }
+    };
+    
+    // Add stock update info if available
+    if (stockUpdateInfo) {
+      responseData.data.stockUpdate = stockUpdateInfo;
+    }
+    
+    // Add custom product details if applicable
+    if (order.isCustomProduct && order.customProduct) {
+      responseData.data.customProduct = {
+        name: order.customProduct.name,
+        description: order.customProduct.description,
+        targetPriceRange: order.customProduct.targetPriceMin && order.customProduct.targetPriceMax
+          ? `${order.customProduct.targetPriceMin} - ${order.customProduct.targetPriceMax}`
+          : null,
+        finalPrice: order.finalPrice
+      };
+    }
+    
+    // Add delivery info if available
+    if (Object.keys(deliveryData).length > 0) {
+      responseData.data.deliveryInfo = order.deliveryInfo;
+    }
+    
+    return res.json(responseData);
     
   } catch (error) {
-    console.error('Error cancelling order:', error);
+    console.error('Error accepting order:', error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to cancel order',
+      message: 'Failed to accept order',
       error: error.message
     });
   }
