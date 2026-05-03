@@ -1,466 +1,450 @@
-const axios = require('axios');
-const whatsappConfig = require('../config/whatsapp');
+// service/whatsappBroadcastQueue.js
+const mongoose = require('mongoose');
 const User = require('../models/User');
+const { ROLES, ACCOUNT_STATUS } = require('../models/User');
+const whatsappService = require('./whatsappService');
 
-class WhatsAppService {
-  constructor() {
-    this.phoneNumberId = whatsappConfig.phoneNumberId;
-    this.accessToken = whatsappConfig.accessToken;
-    this.apiVersion = whatsappConfig.apiVersion || 'v25.0';
-    this.baseUrl = 'https://graph.facebook.com';
-    this.enabled = whatsappConfig.enabled;
+// In-memory queue for products pending broadcast
+let broadcastQueue = [];
+let isProcessing = false;
+let lastBroadcastTime = null;
+const BROADCAST_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
+
+// Track products that have been queued (to avoid duplicates)
+const queuedProductIds = new Set();
+
+/**
+ * Format product details for WhatsApp message
+ */
+function formatProductMessage(product, queuePosition = null, totalInQueue = null) {
+  const primaryImage = product.primaryImage || (product.images && product.images[0]);
+  const imageUrl = primaryImage?.url || null;
+  
+  // Get the first line of description (truncated)
+  const shortDescription = product.description 
+    ? product.description.substring(0, 100) + (product.description.length > 100 ? '...' : '')
+    : 'No description available';
+  
+  // Format price
+  const formattedPrice = new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD'
+  }).format(product.currentPrice || product.price);
+  
+  // Build message
+  let message = `🆕 *NEW PRODUCT AVAILABLE!*\n\n`;
+  message += `📱 *${product.product_name}*\n`;
+  message += `🏷️ Type: ${product.product_type || 'N/A'}\n`;
+  
+  if (product.brand) message += `🏭 Brand: ${product.brand}\n`;
+  if (product.capacity) message += `💾 Capacity: ${product.capacity}\n`;
+  if (product.color) message += `🎨 Color: ${product.color}\n`;
+  if (product.country) message += `🌍 Origin: ${product.country}\n`;
+  if (product.sim) message += `📡 SIM: ${product.sim}\n`;
+  if (product.phoneLocation) message += `📍 Location: ${product.phoneLocation}\n`;
+  
+  message += `💰 Price: ${formattedPrice}\n`;
+  message += `📦 Stock: ${product.stock} units\n\n`;
+  
+  message += `📝 *Description:*\n${shortDescription}\n\n`;
+  message += `🔗 *To order:*\n`;
+  message += `Reply to this message or contact our sales team.\n\n`;
+  
+  // Add queue info if there are multiple products
+  if (queuePosition !== null && totalInQueue !== null && totalInQueue > 1) {
+    message += `\n---\n`;
+    message += `📦 *Product ${queuePosition} of ${totalInQueue} in this update*\n`;
+    message += `_More products available. Ask us for the full list!_`;
   }
+  
+  message += `\n\n_Act fast - limited stock available!_`;
+  
+  return { message, imageUrl };
+}
 
-  /**
-   * Format phone number for WhatsApp (ensure it has country code without +)
-   */
-  formatPhoneNumber(phone) {
-    if (!phone) return null;
+/**
+ * Send a single product notification to all wholesalers
+ */
+async function sendProductToWholesalers(product, queuePosition = null, totalInQueue = null) {
+  try {
+    console.log(`📢 Broadcasting product: ${product.product_name}`);
     
-    // Remove all spaces and special characters
-    let formatted = phone.replace(/\s/g, '').replace(/[()\-]/g, '');
+    // Get all active wholesalers
+    const wholesalers = await User.find({
+      role: ROLES.WHOLESALER,
+      accountStatus: ACCOUNT_STATUS.ACTIVE,
+      whatsappNumber: { $exists: true, $ne: null, $ne: '' }
+    }).select('_id name businessName whatsappNumber tel');
     
-    // If number starts with 0, replace with 237 (Cameroon)
-    if (formatted.startsWith('0')) {
-      formatted = '237' + formatted.substring(1);
-    }
-    // If number is 9 digits without country code
-    else if (formatted.length === 9 && !formatted.startsWith('237')) {
-      formatted = '237' + formatted;
-    }
-    // If number starts with +237, remove the +
-    else if (formatted.startsWith('+237')) {
-      formatted = formatted.substring(1);
-    }
-    // If number starts with 00237, replace with 237
-    else if (formatted.startsWith('00237')) {
-      formatted = formatted.substring(3);
-    }
-    
-    return formatted;
-  }
-
-  /**
-   * Find salesman by business address (returns the salesman object)
-   */
-  async findSalesmanByBusinessAddress(businessAddress) {
-    try {
-      // Find active salesman whose business address matches the order's address
-      const salesman = await User.findOne({
-        role: 'salesman',
-        accountStatus: 'active',
-        businessAddress: { $regex: new RegExp(businessAddress, 'i') }
-      }).select('name businessAddress whatsappNumber tel');
-      
-      if (salesman && salesman.whatsappNumber) {
-        console.log(`✅ Found salesman for address "${businessAddress}": ${salesman.name} - ${salesman.whatsappNumber}`);
-        return salesman;
-      }
-      
-      console.log(`⚠️ No active salesman found for business address: ${businessAddress}`);
-      return null;
-    } catch (error) {
-      console.error('Error finding salesman by business address:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Find all active salesmen (for broadcasting if needed)
-   */
-  async findAllSalesmen() {
-    try {
-      const salesmen = await User.find({
-        role: 'salesman',
-        accountStatus: 'active'
-      }).select('name businessAddress whatsappNumber tel');
-      
-      console.log(`✅ Found ${salesmen.length} active salesmen`);
-      return salesmen;
-    } catch (error) {
-      console.error('Error finding salesmen:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Find admin (returns the admin object)
-   */
-  async findAdmin() {
-    try {
-      const admin = await User.findOne({
-        role: 'admin',
-        accountStatus: 'active'
-      }).select('name businessAddress whatsappNumber tel');
-      
-      if (admin && admin.whatsappNumber) {
-        console.log(`✅ Found admin: ${admin.name} - ${admin.whatsappNumber}`);
-        return admin;
-      }
-      
-      console.log('⚠️ No active admin found');
-      return null;
-    } catch (error) {
-      console.error('Error finding admin:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Send WhatsApp message using Cloud API
-   */
-  async sendMessage(to, message, options = {}) {
-    if (!this.enabled) {
-      console.log('WhatsApp notifications are disabled. Message would be sent:', { to, message });
-      return { success: true, mock: true, message: 'WhatsApp disabled' };
-    }
-
-    if (!this.phoneNumberId || !this.accessToken) {
-      console.error('WhatsApp configuration missing. PhoneNumberId or AccessToken not set.');
-      return { success: false, error: 'WhatsApp not configured' };
-    }
-
-    if (!to) {
-      console.error('No recipient number provided');
-      return { success: false, error: 'No recipient number' };
-    }
-
-    try {
-      const formattedNumber = this.formatPhoneNumber(to);
-      const url = `${this.baseUrl}/${this.apiVersion}/${this.phoneNumberId}/messages`;
-      
-      let requestBody;
-      
-      // If using a template
-      if (options.template) {
-        requestBody = {
-          messaging_product: 'whatsapp',
-          to:+formattedNumber,
-          type: 'template',
-          template: {
-            name: "hello_world",
-            language: { code:  'en_US' },
-            components: options.template.components || []
-          }
-        };
-      } 
-      // Regular text message
-      else {
-        requestBody = {
-          messaging_product: 'whatsapp',
-          to: formattedNumber,
-          type: 'text',
-          text: {
-            preview_url: options.previewUrl || false,
-            body: message
-          }
-        };
-      }
-
-      const response = await axios.post(url, requestBody, {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      console.log(`✅ WhatsApp message sent to ${formattedNumber}:`, response.data.messages?.[0]?.id);
-      return { 
-        success: true, 
-        messageId: response.data.messages?.[0]?.id, 
-        to: formattedNumber,
-        recipientName: options.recipientName || 'Unknown'
-      };
-    } catch (error) {
-      console.error('WhatsApp API error:', error.response?.data || error.message);
-      return { 
-        success: false, 
-        error: error.response?.data?.error?.message || error.message,
-        details: error.response?.data,
-        to: to
-      };
-    }
-  }
-
-  /**
-   * Send template message
-   */
-  async sendTemplateMessage(to, templateName, language = 'en_US', components = []) {
-    return await this.sendMessage(to, null, {
-      template: {
-        name: templateName,
-        language: language,
-        components: components
-      }
-    });
-  }
-
-  /**
-   * Format order message body (for text messages)
-   */
-  formatOrderMessageBody(order, user, eventType, staffName = null, staffRole = null) {
-    const orderTypeLabel = order.orderType === 'buy' ? '🛒 BUY ORDER' : '💰 PRICE OFFER';
-    const orderTypeEmoji = order.orderType === 'buy' ? '📦' : '🤝';
-    const currency = 'XAF';
-    const orderDate = new Date(order.createdAt).toLocaleString();
-    
-    switch(eventType) {
-      case 'new_order':
-        if (order.orderType === 'buy') {
-          return `🔔 NEW BUY ORDER - Action Required
-
-${orderTypeEmoji} ${orderTypeLabel}
-
-Order ID: ${order._id}
-Date: ${orderDate}
-Customer: ${user.businessName || user.name}
-Phone: ${user.tel}
-Address: ${order.deliveryInfo?.deliveryAddress || user.businessAddress}
-
-Product Details:
-• Name: ${order.productName}
-• Quantity: ${order.quantity}
-• Unit Price: ${order.productPrice.toLocaleString()} ${currency}
-• Total: ${order.originalTotal.toLocaleString()} ${currency}
-
-Customer Notes: ${order.userNotes || 'None'}
-
-⚠️ Please review and respond to this order through the dashboard.
-Order ID: ${order._id}`;
-        } else {
-          return `🔔 NEW PRICE OFFER - Review Required
-
-${orderTypeEmoji} ${orderTypeLabel}
-
-Order ID: ${order._id}
-Date: ${orderDate}
-Customer: ${user.businessName || user.name}
-Phone: ${user.tel}
-
-Product Details:
-• Name: ${order.productName}
-• Quantity: ${order.quantity}
-• Original Price: ${order.productPrice.toLocaleString()} ${currency}
-• Offered Price: ${order.offeredPrice.toLocaleString()} ${currency}
-• Savings: ${(order.productPrice - order.offeredPrice).toLocaleString()} ${currency}
-
-Customer Notes: ${order.userNotes || 'None'}
-
-⚠️ Please review this offer and respond through the dashboard.
-Order ID: ${order._id}`;
-        }
-        
-      case 'order_accepted':
-        if (order.orderType === 'buy') {
-          return `✅ ORDER ACCEPTED - ${staffName || 'Staff'}
-
-✅ ORDER ACCEPTED
-
-Order ID: ${order._id}
-Product: ${order.productName}
-Quantity: ${order.quantity}
-Total: ${(order.finalPrice || order.originalTotal).toLocaleString()} ${currency}
-
-Status: Your order has been accepted and is being processed.
-Processed by: ${staffName || 'Staff'} (${staffRole || 'Salesman'})
-
-Thank you for your business! We'll keep you updated on delivery.`;
-        } else {
-          return `🎉 OFFER ACCEPTED - ${staffName || 'Admin'}
-
-🎉 OFFER ACCEPTED
-
-Order ID: ${order._id}
-Product: ${order.productName}
-Quantity: ${order.quantity}
-Final Price: ${order.finalPrice.toLocaleString()} ${currency}
-You saved: ${(order.productPrice - order.finalPrice).toLocaleString()} ${currency}
-
-Processed by: ${staffName || 'Admin'}
-
-Your offer has been accepted! Please proceed with payment to complete your order.`;
-        }
-        
-      case 'order_rejected':
-        return `❌ ORDER DECLINED
-
-Order ID: ${order._id}
-Product: ${order.productName}
-Reason: ${order.rejectionReason || 'We cannot fulfill this order at this time'}
-
-Processed by: ${staffName || 'Staff'}
-
-Please contact us for more information or to discuss alternatives.`;
-        
-      case 'delivery_update':
-        return `🚚 DELIVERY UPDATE
-
-Order ID: ${order._id}
-Product: ${order.productName}
-Delivery Status: ${order.deliveryInfo?.deliveryStatus || 'Processing'}
-${order.deliveryInfo?.trackingNumber ? `Tracking Number: ${order.deliveryInfo.trackingNumber}\n` : ''}
-${order.deliveryInfo?.courierService ? `Courier: ${order.deliveryInfo.courierService}\n` : ''}
-${order.deliveryInfo?.estimatedDeliveryDate ? `Estimated Delivery: ${new Date(order.deliveryInfo.estimatedDeliveryDate).toLocaleDateString()}\n` : ''}
-
-Track your order status in the dashboard.`;
-        
-      default:
-        return `📋 ORDER UPDATE
-
-Order ID: ${order._id}
-Product: ${order.productName}
-Status: ${order.status}
-
-Check your dashboard for more details.`;
-    }
-  }
-
-  /**
-   * Send order notification to salesman based on business address match
-   * This dynamically finds the right salesman for each order
-   */
-  async notifySalesmanByAddress(order, user) {
-    const businessAddress = order.businessAddress || user.businessAddress;
-    
-    if (!businessAddress) {
-      console.log('No business address found in order');
-      return { success: false, error: 'No business address found' };
-    }
-    
-    // Find the salesman assigned to this business address
-    const salesman = await this.findSalesmanByBusinessAddress(businessAddress);
-    
-    if (!salesman || !salesman.whatsappNumber) {
-      console.log(`No salesman found with WhatsApp for address: ${businessAddress}`);
-      return { 
-        success: false, 
-        error: 'No salesman found for this address',
-        businessAddress: businessAddress
+    if (wholesalers.length === 0) {
+      console.log('No active wholesalers found to notify');
+      return {
+        success: false,
+        message: 'No active wholesalers found',
+        totalWholesalers: 0,
+        results: []
       };
     }
     
-    const messageBody = this.formatOrderMessageBody(order, user, 'new_order');
-    const fullMessage = `${messageBody}\n\n---\n📍 Assigned Region: ${businessAddress}\n👤 Assigned Salesman: ${salesman.name}\n💡 Action Required: Please log in to the dashboard to respond to this order.`;
+    console.log(`Found ${wholesalers.length} active wholesalers to notify`);
     
-    // Send to the specific salesman's WhatsApp number
-    const result = await this.sendMessage(salesman.whatsappNumber, fullMessage);
+    const { message, imageUrl } = formatProductMessage(product, queuePosition, totalInQueue);
     
-    return {
-      ...result,
-      recipient: {
-        name: salesman.name,
-        role: 'salesman',
-        businessAddress: salesman.businessAddress,
-        whatsappNumber: salesman.whatsappNumber
-      }
-    };
-  }
-
-  /**
-   * Send order notification to admin for offer orders
-   * This dynamically finds the admin from the database
-   */
-  async notifyAdminForOffer(order, user) {
-    // Find admin from database (not hardcoded)
-    const admin = await this.findAdmin();
-    
-    if (!admin || !admin.whatsappNumber) {
-      console.log('No admin found with WhatsApp number');
-      return { success: false, error: 'No admin found' };
-    }
-    
-    const messageBody = this.formatOrderMessageBody(order, user, 'new_order');
-    const fullMessage = `${messageBody}\n\n---\n👤 Admin: ${admin.name}\n💡 Action Required: Please review this offer and respond through the dashboard.`;
-    
-    // Send to the admin's WhatsApp number from database
-    const result = await this.sendMessage(admin.whatsappNumber, fullMessage);
-    
-    return {
-      ...result,
-      recipient: {
-        name: admin.name,
-        role: 'admin',
-        whatsappNumber: admin.whatsappNumber
-      }
-    };
-  }
-
-  /**
-   * Send order notification to customer
-   */
-  async notifyCustomer(order, user, eventType, staffName = null, staffRole = null) {
-    if (!user.whatsappNumber) {
-      console.log(`Customer ${user._id} has no WhatsApp number`);
-      return { success: false, error: 'Customer has no WhatsApp number' };
-    }
-    
-    const messageBody = this.formatOrderMessageBody(order, user, eventType, staffName, staffRole);
-    const result = await this.sendMessage(user.whatsappNumber, messageBody);
-    
-    return {
-      ...result,
-      recipient: {
-        name: user.businessName || user.name,
-        role: 'customer',
-        whatsappNumber: user.whatsappNumber
-      }
-    };
-  }
-
-  /**
-   * Broadcast message to all salesmen (optional feature)
-   */
-  async broadcastToSalesmen(message) {
-    const salesmen = await this.findAllSalesmen();
+    // Send to all wholesalers in parallel with batching
+    const batchSize = 5;
     const results = [];
     
-    for (const salesman of salesmen) {
-      if (salesman.whatsappNumber) {
-        const result = await this.sendMessage(salesman.whatsappNumber, message);
-        results.push({
-          salesman: salesman.name,
-          whatsappNumber: salesman.whatsappNumber,
-          success: result.success,
-          error: result.error
-        });
+    for (let i = 0; i < wholesalers.length; i += batchSize) {
+      const batch = wholesalers.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (wholesaler) => {
+        try {
+          // Normalize phone number
+          let whatsappNumber = wholesaler.whatsappNumber.replace(/\s/g, '');
+          if (/^\d{9}$/.test(whatsappNumber)) {
+            whatsappNumber = `237${whatsappNumber}`;
+          }
+          if (whatsappNumber.startsWith('00237')) {
+            whatsappNumber = whatsappNumber.substring(2);
+          }
+          if (!whatsappNumber.startsWith('+')) {
+            whatsappNumber = `+${whatsappNumber}`;
+          }
+          
+          const result = await whatsappService.sendWhatsAppMessage(
+            whatsappNumber,
+            message,
+            imageUrl
+          );
+          
+          return {
+            success: true,
+            wholesalerId: wholesaler._id,
+            wholesalerName: wholesaler.businessName || wholesaler.name,
+            whatsappNumber: wholesaler.whatsappNumber
+          };
+        } catch (error) {
+          console.error(`Failed to send to ${wholesaler.businessName}:`, error);
+          return {
+            success: false,
+            wholesalerId: wholesaler._id,
+            wholesalerName: wholesaler.businessName || wholesaler.name,
+            error: error.message
+          };
+        }
+      });
+      
+      const batchResults = await Promise.allSettled(batchPromises);
+      batchResults.forEach(result => {
+        if (result.status === 'fulfilled') {
+          results.push(result.value);
+        } else {
+          results.push({
+            success: false,
+            error: result.reason?.message || 'Unknown error'
+          });
+        }
+      });
+      
+      // Delay between batches
+      if (i + batchSize < wholesalers.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
     
+    const successfulCount = results.filter(r => r.success).length;
+    const failedCount = results.filter(r => !r.success).length;
+    
+    console.log(`✅ Broadcast complete: ${successfulCount} successful, ${failedCount} failed`);
+    
     return {
-      total: salesmen.length,
-      results: results
+      success: true,
+      message: `Broadcast sent to ${successfulCount} out of ${wholesalers.length} wholesalers`,
+      totalWholesalers: wholesalers.length,
+      successfulCount,
+      failedCount,
+      results
     };
-  }
-
-  /**
-   * Test WhatsApp connection using the hello_world template
-   * This sends to the first admin found in the database
-   */
-  async testConnection() {
-    if (!this.enabled) {
-      return { success: false, message: 'WhatsApp disabled' };
-    }
     
-    const admin = await this.findAdmin();
-    if (!admin || !admin.whatsappNumber) {
-      return { success: false, message: 'No admin found to test' };
-    }
-    
-    console.log(`Testing WhatsApp connection to admin: ${admin.name} (${admin.whatsappNumber})`);
-    return await this.sendTemplateMessage(admin.whatsappNumber, 'hello_world', 'en_US');
-  }
-
-  /**
-   * Get recipient info for debugging
-   */
-  async getRecipientInfo(role, businessAddress = null) {
-    if (role === 'admin') {
-      return await this.findAdmin();
-    } else if (role === 'salesman' && businessAddress) {
-      return await this.findSalesmanByBusinessAddress(businessAddress);
-    }
-    return null;
+  } catch (error) {
+    console.error('Error broadcasting product:', error);
+    return {
+      success: false,
+      message: 'Failed to broadcast product notification',
+      error: error.message
+    };
   }
 }
 
-module.exports = new WhatsAppService();
+/**
+ * Queue a product for broadcast
+ */
+function queueProductForBroadcast(product) {
+  // Check if product is already in queue
+  if (queuedProductIds.has(product._id.toString())) {
+    console.log(`Product ${product.product_name} already in queue, skipping`);
+    return false;
+  }
+  
+  // Don't queue placeholder products
+  if (product.isPlaceholder) {
+    console.log(`Product ${product.product_name} is a placeholder, skipping broadcast`);
+    return false;
+  }
+  
+  // Add to queue
+  broadcastQueue.push({
+    product,
+    queuedAt: new Date(),
+    productId: product._id.toString()
+  });
+  
+  queuedProductIds.add(product._id.toString());
+  
+  console.log(`✅ Product "${product.product_name}" added to broadcast queue`);
+  console.log(`Queue size: ${broadcastQueue.length}`);
+  
+  // Start processing if not already processing
+  if (!isProcessing) {
+    processBroadcastQueue();
+  }
+  
+  return true;
+}
+
+/**
+ * Process the broadcast queue
+ */
+async function processBroadcastQueue() {
+  if (isProcessing) {
+    console.log('Already processing queue, skipping...');
+    return;
+  }
+  
+  if (broadcastQueue.length === 0) {
+    console.log('Broadcast queue is empty');
+    return;
+  }
+  
+  isProcessing = true;
+  
+  try {
+    // Check if we should broadcast now
+    const now = new Date();
+    const timeSinceLastBroadcast = lastBroadcastTime ? now - lastBroadcastTime : Infinity;
+    
+    if (timeSinceLastBroadcast >= BROADCAST_INTERVAL) {
+      // Time to broadcast!
+      console.log(`⏰ Broadcasting ${broadcastQueue.length} queued product(s)...`);
+      console.log(`Time since last broadcast: ${Math.round(timeSinceLastBroadcast / 60000)} minutes`);
+      
+      // Get all products in queue
+      const productsToBroadcast = [...broadcastQueue];
+      
+      // Clear the queue
+      broadcastQueue = [];
+      queuedProductIds.clear();
+      
+      // Update last broadcast time
+      lastBroadcastTime = now;
+      
+      // Send combined broadcast
+      await sendBatchBroadcast(productsToBroadcast);
+      
+    } else {
+      // Wait until next broadcast time
+      const waitTime = BROADCAST_INTERVAL - timeSinceLastBroadcast;
+      console.log(`⏳ Next broadcast in ${Math.round(waitTime / 60000)} minutes`);
+      console.log(`${broadcastQueue.length} product(s) waiting in queue`);
+      
+      // Schedule next check
+      setTimeout(() => {
+        isProcessing = false;
+        processBroadcastQueue();
+      }, Math.min(waitTime, 60000)); // Check every minute or at next broadcast time
+    }
+    
+  } catch (error) {
+    console.error('Error processing broadcast queue:', error);
+  } finally {
+    isProcessing = false;
+    
+    // If there are still items in queue, process again
+    if (broadcastQueue.length > 0) {
+      setTimeout(() => {
+        processBroadcastQueue();
+      }, 5000);
+    }
+  }
+}
+
+/**
+ * Send a batch broadcast with multiple products
+ */
+async function sendBatchBroadcast(productsToBroadcast) {
+  try {
+    console.log(`📦 Preparing batch broadcast for ${productsToBroadcast.length} product(s)`);
+    
+    // Get all active wholesalers
+    const wholesalers = await User.find({
+      role: ROLES.WHOLESALER,
+      accountStatus: ACCOUNT_STATUS.ACTIVE,
+      whatsappNumber: { $exists: true, $ne: null, $ne: '' }
+    }).select('_id name businessName whatsappNumber tel');
+    
+    if (wholesalers.length === 0) {
+      console.log('No active wholesalers found');
+      return;
+    }
+    
+    // Create a combined message for all products
+    const combinedMessage = createCombinedProductMessage(productsToBroadcast);
+    const primaryImage = productsToBroadcast[0]?.product?.primaryImage || 
+                        (productsToBroadcast[0]?.product?.images && productsToBroadcast[0]?.product?.images[0]);
+    const imageUrl = primaryImage?.url || null;
+    
+    // Send to all wholesalers
+    const batchSize = 5;
+    let successfulCount = 0;
+    let failedCount = 0;
+    
+    for (let i = 0; i < wholesalers.length; i += batchSize) {
+      const batch = wholesalers.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (wholesaler) => {
+        try {
+          let whatsappNumber = wholesaler.whatsappNumber.replace(/\s/g, '');
+          if (/^\d{9}$/.test(whatsappNumber)) {
+            whatsappNumber = `237${whatsappNumber}`;
+          }
+          if (whatsappNumber.startsWith('00237')) {
+            whatsappNumber = whatsappNumber.substring(2);
+          }
+          if (!whatsappNumber.startsWith('+')) {
+            whatsappNumber = `+${whatsappNumber}`;
+          }
+          
+          await whatsappService.sendWhatsAppMessage(
+            whatsappNumber,
+            combinedMessage,
+            imageUrl
+          );
+          return true;
+        } catch (error) {
+          console.error(`Failed to send to ${wholesaler.businessName}:`, error);
+          return false;
+        }
+      });
+      
+      const results = await Promise.all(batchPromises);
+      successfulCount += results.filter(r => r).length;
+      failedCount += results.filter(r => !r).length;
+      
+      if (i + batchSize < wholesalers.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    console.log(`✅ Batch broadcast complete: ${successfulCount} successful, ${failedCount} failed`);
+    
+    // Mark all products as notified
+    for (const item of productsToBroadcast) {
+      if (item.product && typeof item.product.markWhatsappNotificationSent === 'function') {
+        await item.product.markWhatsappNotificationSent();
+        console.log(`✅ Marked "${item.product.product_name}" as notified`);
+      }
+    }
+    
+  } catch (error) {
+    console.error('Error sending batch broadcast:', error);
+  }
+}
+
+/**
+ * Create a combined message for multiple products
+ */
+function createCombinedProductMessage(productsToBroadcast) {
+  const productCount = productsToBroadcast.length;
+  const totalStock = productsToBroadcast.reduce((sum, item) => sum + (item.product?.stock || 0), 0);
+  
+  let message = `🆕 *NEW PRODUCTS AVAILABLE!*\n\n`;
+  message += `📦 *${productCount} New Product(s) Just Added*\n`;
+  message += `📊 Total Units: ${totalStock}\n\n`;
+  message += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+  
+  // List first 3 products with details
+  const productsToList = productsToBroadcast.slice(0, 3);
+  for (let i = 0; i < productsToList.length; i++) {
+    const item = productsToList[i];
+    const product = item.product;
+    const formattedPrice = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(product.currentPrice || product.price);
+    
+    message += `${i + 1}. *${product.product_name}*\n`;
+    message += `   💰 ${formattedPrice} | 📦 ${product.stock} units\n`;
+    if (product.brand) message += `   🏭 ${product.brand}\n`;
+    if (product.phoneLocation) message += `   📍 ${product.phoneLocation}\n`;
+    message += `\n`;
+  }
+  
+  // If more than 3 products
+  if (productCount > 3) {
+    message += `✨ *And ${productCount - 3} more product(s)*\n`;
+    message += `📞 *Contact us for complete list and details!*\n\n`;
+  }
+  
+  message += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+  message += `🔗 *To place an order:*\n`;
+  message += `Reply to this message or contact our sales team.\n\n`;
+  message += `_Hurry! Limited stock available for these new arrivals._`;
+  
+  return message;
+}
+
+/**
+ * Get queue status
+ */
+function getQueueStatus() {
+  return {
+    queueSize: broadcastQueue.length,
+    queuedProducts: broadcastQueue.map(item => ({
+      productId: item.productId,
+      productName: item.product.product_name,
+      queuedAt: item.queuedAt
+    })),
+    lastBroadcastTime: lastBroadcastTime,
+    nextBroadcastIn: lastBroadcastTime 
+      ? Math.max(0, BROADCAST_INTERVAL - (Date.now() - lastBroadcastTime))
+      : 0,
+    isProcessing: isProcessing
+  };
+}
+
+/**
+ * Force immediate broadcast (for admin use)
+ */
+async function forceBroadcast() {
+  if (broadcastQueue.length === 0) {
+    return { success: false, message: 'No products in queue' };
+  }
+  
+  const productsToBroadcast = [...broadcastQueue];
+  broadcastQueue = [];
+  queuedProductIds.clear();
+  lastBroadcastTime = new Date();
+  
+  await sendBatchBroadcast(productsToBroadcast);
+  
+  return {
+    success: true,
+    message: `Forced broadcast of ${productsToBroadcast.length} product(s)`,
+    productsBroadcast: productsToBroadcast.length
+  };
+}
+
+module.exports = {
+  queueProductForBroadcast,
+  getQueueStatus,
+  forceBroadcast,
+  BROADCAST_INTERVAL
+};
