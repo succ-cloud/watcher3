@@ -1627,7 +1627,7 @@ module.exports = {
   patchProduct,
   deleteProduct,
   getBroadcastQueueStatus,
-  forceBroadcastNo
+  forceBroadcastNow,
   // Search
   searchProductsByName,
   advancedSearch,
