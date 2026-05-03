@@ -1,6 +1,7 @@
 const Product = require('../models/ItemsList'); // Make sure this path is correct
 const { cloudinary } = require('../config/cloudinary');
 const productWhatsappService = require('../service/productWhatsappService');
+const broadcastQueue = require('../service/whatsappBroadcastQueue');
 
 // ==================== BASIC CRUD OPERATIONS ====================
 
@@ -42,7 +43,7 @@ const createProduct = async (req, res) => {
         product.images.push({
           url: file.path,
           publicId: file.filename,
-          isPrimary: index === 0, // First image is primary
+          isPrimary: index === 0,
           alt: productData.product_name || 'product image'
         });
       });
@@ -50,23 +51,22 @@ const createProduct = async (req, res) => {
 
     const savedProduct = await product.save();
 
-    // ========== SEND WHATSAPP NOTIFICATION TO ALL WHOLESALERS ==========
-    // Send notification in background (don't await to avoid delaying response)
-    productWhatsappService.broadcastProductToWholesalers(savedProduct, true)
-      .then(result => {
-        console.log(`WhatsApp broadcast result for product ${savedProduct._id}:`, result.message);
-      })
-      .catch(error => {
-        console.error(`Failed to send WhatsApp broadcast for product ${savedProduct._id}:`, error);
-      });
-
+    // ========== QUEUE FOR WHATSAPP BROADCAST ==========
+    // Add to broadcast queue instead of sending immediately
+    broadcastQueue.queueProductForBroadcast(savedProduct);
+    
+    // Get queue status
+    const queueStatus = broadcastQueue.getQueueStatus();
+    
     res.status(201).json({
       success: true,
-      message: 'Product created successfully. WhatsApp notifications sent to wholesalers.',
+      message: 'Product created successfully',
       data: savedProduct,
-      whatsappNotification: {
+      whatsappBroadcast: {
         queued: true,
-        note: 'WhatsApp notifications are being sent in the background'
+        queueSize: queueStatus.queueSize,
+        nextBroadcastIn: queueStatus.nextBroadcastIn,
+        message: `Product will be broadcast to wholesalers in ${Math.round(queueStatus.nextBroadcastIn / 60000)} minutes (batch broadcast)`
       }
     });
   } catch (error) {
@@ -74,6 +74,47 @@ const createProduct = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error creating product',
+      error: error.message
+    });
+  }
+};
+
+// Add a new endpoint to check queue status
+const getBroadcastQueueStatus = async (req, res) => {
+  try {
+    const queueStatus = broadcastQueue.getQueueStatus();
+    
+    res.status(200).json({
+      success: true,
+      data: queueStatus,
+      broadcastIntervalMinutes: broadcastQueue.BROADCAST_INTERVAL / 60000
+    });
+  } catch (error) {
+    console.error('Error getting queue status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error getting queue status',
+      error: error.message
+    });
+  }
+};
+
+// Add a new endpoint to force broadcast (admin only)
+const forceBroadcastNow = async (req, res) => {
+  try {
+    // You should add admin authentication check here
+    const result = await broadcastQueue.forceBroadcast();
+    
+    res.status(200).json({
+      success: result.success,
+      message: result.message,
+      data: result
+    });
+  } catch (error) {
+    console.error('Error forcing broadcast:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error forcing broadcast',
       error: error.message
     });
   }
@@ -1585,7 +1626,8 @@ module.exports = {
   updateProduct,
   patchProduct,
   deleteProduct,
-  
+  getBroadcastQueueStatus,
+  forceBroadcastNo
   // Search
   searchProductsByName,
   advancedSearch,
