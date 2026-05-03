@@ -620,18 +620,32 @@ const updateProductStock = async (req, res) => {
       });
     }
 
+    // Get current product before update
+    const currentProduct = await Product.findById(req.params.id);
+    if (!currentProduct) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+    
+    const previousStock = currentProduct.stock;
     let updateOperation;
+    let newStock;
     
     switch (operation) {
       case 'increment':
         updateOperation = { $inc: { stock: numQuantity } };
+        newStock = previousStock + numQuantity;
         break;
       case 'decrement':
         updateOperation = { $inc: { stock: -numQuantity } };
+        newStock = previousStock - numQuantity;
         break;
       case 'set':
       default:
         updateOperation = { $set: { stock: numQuantity } };
+        newStock = numQuantity;
     }
 
     const product = await Product.findByIdAndUpdate(
@@ -647,10 +661,26 @@ const updateProductStock = async (req, res) => {
       });
     }
 
+    // ========== SEND NOTIFICATION ON STOCK INCREASE ==========
+    // Only notify if stock increased and it's significant (at least 1 unit)
+    if (newStock > previousStock && numQuantity > 0) {
+      productWhatsappService.notifyProductStockUpdate(product, previousStock, newStock)
+        .then(result => {
+          console.log(`Stock update notification result for product ${product._id}:`, result.message);
+        })
+        .catch(error => {
+          console.error(`Failed to send stock update notification for product ${product._id}:`, error);
+        });
+    }
+
     res.status(200).json({
       success: true,
       message: 'Product stock updated successfully',
-      data: product
+      data: product,
+      whatsappNotification: (newStock > previousStock && numQuantity > 0) ? {
+        queued: true,
+        note: 'Stock increase notification sent to wholesalers'
+      } : null
     });
   } catch (error) {
     console.error('Update stock error:', error);
@@ -667,7 +697,6 @@ const updateProductStock = async (req, res) => {
     });
   }
 };
-
 // @desc    Get low stock products
 // @route   GET /api/products/stock/low
 // @access  Public
