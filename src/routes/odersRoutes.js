@@ -23,7 +23,7 @@ router.patch('/orders/:id/cancel', orderController.cancelOrder);
  * @desc    Permanently delete an order
  * @access  Admin or Order Owner
  */
-router.delete('/orders/:id',orderController.deleteOrder
+router.delete('/orders/:id/delete',orderController.deleteOrder
 );
 // DELIVERY ROUTES (Admin only)
 router.patch('/orders/:id/delivery', 
