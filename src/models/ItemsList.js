@@ -279,22 +279,35 @@ const productSchema = new mongoose.Schema({
 
 // Virtual for primary image
 productSchema.virtual('primaryImage').get(function() {
-  return this.images.find(img => img.isPrimary) || this.images[0] || null;
+  if (!this.images || !Array.isArray(this.images) || this.images.length === 0) {
+    return null;
+  }
+  const primaryImg = this.images.find(img => img.isPrimary);
+  return primaryImg || this.images[0] || null;
 });
 
 // Virtual for formatted price
 productSchema.virtual('formattedPrice').get(function() {
+  if (this.price === undefined || this.price === null) {
+    return '$0.00';
+  }
   return `$${this.price.toFixed(2)}`;
 });
 
 // Virtual for formatted discounted price
 productSchema.virtual('formattedDiscountedPrice').get(function() {
-  return this.discountedPrice ? `$${this.discountedPrice.toFixed(2)}` : null;
+  if (this.discountedPrice && this.discountedPrice > 0) {
+    return `$${this.discountedPrice.toFixed(2)}`;
+  }
+  return null;
 });
 
 // Virtual for current active price (discounted if available)
 productSchema.virtual('currentPrice').get(function() {
-  return this.discountedPrice && this.discountedPrice > 0 ? this.discountedPrice : this.price;
+  if (this.discountedPrice && this.discountedPrice > 0) {
+    return this.discountedPrice;
+  }
+  return this.price || 0;
 });
 
 // Virtual for formatted current price
@@ -304,7 +317,7 @@ productSchema.virtual('formattedCurrentPrice').get(function() {
 
 // Virtual for discount percentage
 productSchema.virtual('discountPercentage').get(function() {
-  if (this.discountedPrice && this.price > 0) {
+  if (this.discountedPrice && this.price > 0 && this.discountedPrice < this.price) {
     return Math.round(((this.price - this.discountedPrice) / this.price) * 100);
   }
   return 0;
@@ -326,19 +339,18 @@ productSchema.virtual('stockStatus').get(function() {
 // Virtual for full product info (for WhatsApp messages)
 productSchema.virtual('whatsappInfo').get(function() {
   return {
-    name: this.product_name,
-    type: this.product_type,
-    brand: this.brand,
-    capacity: this.capacity,
-    color: this.color,
-    price: this.currentPrice,
-    formattedPrice: this.formattedCurrentPrice,
-    stock: this.stock,
-    location: this.phoneLocation,
-    description: this.description.substring(0, 150)
+    name: this.product_name || 'Unknown',
+    type: this.product_type || 'Unknown',
+    brand: this.brand || 'Unknown',
+    capacity: this.capacity || 'Unknown',
+    color: this.color || 'Unknown',
+    price: this.currentPrice || 0,
+    formattedPrice: this.formattedCurrentPrice || '$0',
+    stock: this.stock || 0,
+    location: this.phoneLocation || 'Unknown',
+    description: this.description ? this.description.substring(0, 150) : 'No description available'
   };
 });
-
 // ==================== INDEXES ====================
 
 // Text search index
