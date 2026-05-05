@@ -1537,7 +1537,105 @@ async function markNotificationRead(req, res) {
     });
   }
 }
-
+/**
+ * DELETE /api/orders/:id
+ * Permanently delete an order from the database
+ * Access: Admin only (or user who owns the order)
+ */
+async function deleteOrder(req, res) {
+  try {
+    const { id } = req.params;
+    const { userId, reason } = req.body;
+    const currentUser = req.user || req.userId;
+    
+    // Check if user is authenticated
+    if (!currentUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    // Find the order
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    // Check permissions: Admin can delete any order, users can only delete their own orders
+    const isAdmin = req.user?.role === 'admin' || req.role === 'admin';
+    const isOwner = order.userId.toString() === (userId || currentUser._id || currentUser);
+    
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have permission to delete this order'
+      });
+    }
+    
+    // Log deletion for audit purposes
+    console.log(`🗑️ Deleting order ${id}:`);
+    console.log(`   - Order Type: ${order.orderType}`);
+    console.log(`   - Customer: ${order.businessName}`);
+    console.log(`   - Product: ${order.productName}`);
+    console.log(`   - Quantity: ${order.quantity}`);
+    console.log(`   - Status: ${order.status}`);
+    console.log(`   - Deleted by: ${isAdmin ? 'Admin' : 'User'}`);
+    
+    // If order was accepted and stock was deducted, we need to restore stock
+    if (order.status === ORDER_STATUS.ACCEPTED && !order.isCustomProduct && order.productId) {
+      const product = await Product.findById(order.productId);
+      if (product) {
+        product.stock += order.quantity;
+        await product.save();
+        console.log(`🔄 Stock restored for product ${product.product_name}: +${order.quantity}, New stock: ${product.stock}`);
+      }
+    }
+    
+    // Delete associated notifications
+    await Notification.deleteMany({ orderId: order._id });
+    console.log(`📧 Deleted ${await Notification.countDocuments({ orderId: order._id })} associated notifications`);
+    
+    // Delete the order
+    await Order.findByIdAndDelete(id);
+    
+    // If there was an associated cart item for this order, we don't restore it (order already processed)
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Order deleted successfully',
+      data: {
+        deletedOrderId: id,
+        orderDetails: {
+          orderType: order.orderType,
+          productName: order.productName,
+          quantity: order.quantity,
+          status: order.status
+        },
+        stockRestored: order.status === ORDER_STATUS.ACCEPTED && !order.isCustomProduct
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error deleting order:', error);
+    
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID format'
+      });
+    }
+    
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete order',
+      error: error.message
+    });
+  }
+}
 /**
  * PATCH /api/notifications/mark-all-read
  * Mark all notifications as read
@@ -1587,6 +1685,7 @@ module.exports = {
   acceptOrder,
   rejectOrder,
   cancelOrder,
+  deleteOrder,  
   getOrders,
   getOrderById,
   getNotifications,
