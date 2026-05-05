@@ -1,6 +1,32 @@
 const Cart = require('../models/Cart');
 const Product = require('../models/ItemsList');
-const User = require('../models/User');
+
+const MIN_BUY_QTY = 4;
+
+function resolveUserId(req) {
+  const u = req.user;
+  return (
+    req.userId ||
+    u?.userId ||
+    u?._id ||
+    u?.id ||
+    null
+  );
+}
+
+function deriveLineKey(body) {
+  if (body.lineKey) return String(body.lineKey).trim();
+  const pid = body.productId;
+  if (!pid) return null;
+  const isOffer =
+    String(body.orderType || '').toLowerCase() === 'offer' ||
+    body.offeredPrice != null;
+  if (isOffer) {
+    const p = Number(body.offeredPrice);
+    return `${String(pid)}::offer::${Number.isFinite(p) ? p : 0}`;
+  }
+  return `${String(pid)}::buy`;
+}
 
 /**
  * @desc    Get user's cart
@@ -9,97 +35,110 @@ const User = require('../models/User');
  */
 const getCart = async (req, res) => {
   try {
-    const userId = req.user._id || req.userId;
-    
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'User id missing from token' });
+    }
+
     const cart = await Cart.getOrCreateCart(userId);
-    const populatedCart = await Cart.findById(cart._id)
-      .populate('items.productId', 'product_name price images stock');
-    
-    const cartSummary = populatedCart.getCartSummary();
-    
+    const populatedCart = await Cart.findById(cart._id).populate(
+      'items.productId',
+      'product_name price images stock',
+    );
+
     res.status(200).json({
       success: true,
-      data: cartSummary
+      data: populatedCart.getCartSummary(),
     });
   } catch (error) {
     console.error('Get cart error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to get cart',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
 /**
- * @desc    Add item to cart
+ * @desc    Add or merge cart line (persist before checkout)
  * @route   POST /api/cart/items
  * @access  Private
  */
 const addToCart = async (req, res) => {
   try {
-    const userId = req.user._id || req.userId;
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'User id missing from token' });
+    }
+
     const {
       productId,
       quantity = 1,
       offeredPrice = null,
+      orderType: orderTypeRaw,
       isPreorder = false,
       customProduct = null,
-      notes = null
+      notes = null,
     } = req.body;
-    
-    if (!productId && !customProduct) {
+
+    const lineKey = deriveLineKey(req.body);
+    if (!lineKey) {
       return res.status(400).json({
         success: false,
-        message: 'Either productId or custom product details are required'
+        message: 'lineKey or productId is required',
       });
     }
-    
-    let product = null;
+
+    const orderType =
+      String(orderTypeRaw || '').toLowerCase() === 'offer' || offeredPrice != null
+        ? 'offer'
+        : 'buy';
+
     let itemData = {};
-    
-    // Handle catalog product
+
     if (productId) {
-      product = await Product.findById(productId);
+      const product = await Product.findById(productId);
       if (!product) {
-        return res.status(404).json({
-          success: false,
-          message: 'Product not found'
-        });
+        return res.status(404).json({ success: false, message: 'Product not found' });
       }
-      
-      // Check stock availability (only for buy orders)
-      if (!isPreorder && !offeredPrice && product.stock < quantity) {
+
+      const qty = Math.max(1, Math.floor(Number(quantity) || 1));
+      const stock = Number(product.stock) || 0;
+
+      if (!isPreorder && orderType === 'buy' && stock > 0 && stock < qty) {
         return res.status(400).json({
           success: false,
-          message: `Insufficient stock. Available: ${product.stock}`,
-          availableStock: product.stock
+          message: `Insufficient stock. Available: ${stock}`,
+          availableStock: stock,
         });
       }
-      
+
+      const imgs = Array.isArray(product.images) ? product.images : [];
       itemData = {
+        lineKey,
+        orderType,
         productId: product._id,
         productName: product.product_name,
-        productPrice: product.price,
-        quantity: Number(quantity),
-        images: product.images.map(img => ({
+        productPrice: Number(product.price) || 0,
+        quantity: qty,
+        images: imgs.map((img) => ({
           url: img.url,
           publicId: img.publicId,
-          isPrimary: img.isPrimary
+          isPrimary: img.isPrimary,
         })),
-        offeredPrice: offeredPrice || null,
-        isPreorder: isPreorder || false,
-        notes: notes || null
+        offeredPrice:
+          orderType === 'offer' && offeredPrice != null ? Number(offeredPrice) : null,
+        isPreorder: !!isPreorder,
+        notes: notes || null,
       };
-    }
-    
-    // Handle custom product (preorder)
-    if (customProduct) {
+    } else if (customProduct) {
       itemData = {
-        productId: null,
+        lineKey,
+        orderType: 'buy',
         productName: customProduct.name,
-        productPrice: customProduct.targetPriceMin || 0,
-        quantity: Number(quantity),
+        productPrice: Number(customProduct.targetPriceMin) || 0,
+        quantity: Math.max(1, Math.floor(Number(quantity) || 1)),
         images: [],
         offeredPrice: null,
         isPreorder: true,
@@ -110,196 +149,232 @@ const addToCart = async (req, res) => {
           targetPriceMin: customProduct.targetPriceMin,
           targetPriceMax: customProduct.targetPriceMax,
           color: customProduct.color,
-          size: customProduct.size
+          size: customProduct.size,
         },
-        notes: notes || customProduct.notes || null
+        notes: notes || customProduct.notes || null,
       };
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Either productId or custom product details are required',
+      });
     }
-    
+
+    if (itemData.orderType === 'buy' && !itemData.isPreorder && itemData.quantity < MIN_BUY_QTY) {
+      return res.status(400).json({
+        success: false,
+        message: `Buy lines require at least ${MIN_BUY_QTY} units`,
+      });
+    }
+
     const cart = await Cart.getOrCreateCart(userId);
     await cart.addItem(itemData);
-    
-    const updatedCart = await Cart.findById(cart._id)
-      .populate('items.productId', 'product_name price images stock');
-    
+
+    const updatedCart = await Cart.findById(cart._id).populate(
+      'items.productId',
+      'product_name price images stock',
+    );
+
     res.status(200).json({
       success: true,
       message: 'Item added to cart successfully',
-      data: updatedCart.getCartSummary()
+      data: updatedCart.getCartSummary(),
     });
   } catch (error) {
     console.error('Add to cart error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to add item to cart',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
 /**
- * @desc    Update cart item quantity
- * @route   PUT /api/cart/items/:productId
+ * @desc    Set quantity for a line (0 removes)
+ * @route   PUT /api/cart/items
+ * @body    { lineKey, quantity }
  * @access  Private
  */
 const updateCartItem = async (req, res) => {
   try {
-    const userId = req.user._id || req.userId;
-    const { productId } = req.params;
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'User id missing from token' });
+    }
+
+    const lineKey = String(req.body.lineKey || '').trim();
     const { quantity } = req.body;
-    
-    if (!productId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Product ID is required'
-      });
+
+    if (!lineKey) {
+      return res.status(400).json({ success: false, message: 'lineKey is required' });
     }
-    
-    if (quantity === undefined || quantity < 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Valid quantity is required'
-      });
+    if (quantity === undefined || quantity === null) {
+      return res.status(400).json({ success: false, message: 'quantity is required' });
     }
-    
+
     const cart = await Cart.getOrCreateCart(userId);
-    await cart.updateItemQuantity(productId, quantity);
-    
-    const updatedCart = await Cart.findById(cart._id)
-      .populate('items.productId', 'product_name price images stock');
-    
+    const q = Number(quantity);
+    const existing = cart.items.find((i) => String(i.lineKey) === lineKey);
+    if (
+      existing &&
+      String(existing.orderType || 'buy') === 'buy' &&
+      !existing.isPreorder &&
+      Number.isFinite(q) &&
+      q > 0 &&
+      q < MIN_BUY_QTY
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: `Buy lines require at least ${MIN_BUY_QTY} units`,
+      });
+    }
+
+    await cart.updateItemQuantity(lineKey, quantity);
+
+    const updatedCart = await Cart.findById(cart._id).populate(
+      'items.productId',
+      'product_name price images stock',
+    );
+
     res.status(200).json({
       success: true,
-      message: quantity === 0 ? 'Item removed from cart' : 'Cart updated successfully',
-      data: updatedCart.getCartSummary()
+      message: Number(quantity) <= 0 ? 'Item removed from cart' : 'Cart updated successfully',
+      data: updatedCart.getCartSummary(),
     });
   } catch (error) {
     console.error('Update cart item error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to update cart',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
 /**
- * @desc    Remove item from cart
- * @route   DELETE /api/cart/items/:productId
+ * @desc    Remove one line
+ * @route   DELETE /api/cart/items
+ * @body    { lineKey }
  * @access  Private
  */
 const removeCartItem = async (req, res) => {
   try {
-    const userId = req.user._id || req.userId;
-    const { productId } = req.params;
-    
-    if (!productId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Product ID is required'
-      });
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'User id missing from token' });
     }
-    
+
+    const lineKey = String(req.body.lineKey || req.query.lineKey || '').trim();
+    if (!lineKey) {
+      return res.status(400).json({ success: false, message: 'lineKey is required' });
+    }
+
     const cart = await Cart.getOrCreateCart(userId);
-    await cart.removeItem(productId);
-    
-    const updatedCart = await Cart.findById(cart._id)
-      .populate('items.productId', 'product_name price images stock');
-    
+    await cart.removeItem(lineKey);
+
+    const updatedCart = await Cart.findById(cart._id).populate(
+      'items.productId',
+      'product_name price images stock',
+    );
+
     res.status(200).json({
       success: true,
       message: 'Item removed from cart',
-      data: updatedCart.getCartSummary()
+      data: updatedCart.getCartSummary(),
     });
   } catch (error) {
     console.error('Remove cart item error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to remove item from cart',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
 /**
- * @desc    Clear entire cart
+ * @desc    Clear entire cart (e.g. after successful checkout)
  * @route   DELETE /api/cart
  * @access  Private
  */
 const clearCart = async (req, res) => {
   try {
-    const userId = req.user._id || req.userId;
-    
-    const cart = await Cart.findOne({ userId, status: 'active' });
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'User id missing from token' });
+    }
+
+    const cart = await Cart.findOne({ userId });
     if (cart) {
       await cart.clearCart();
     }
-    
+
     res.status(200).json({
       success: true,
       message: 'Cart cleared successfully',
-      data: { items: [], summary: { totalItems: 0, totalAmount: 0 } }
+      data: { items: [], summary: { totalItems: 0, totalAmount: 0 } },
     });
   } catch (error) {
     console.error('Clear cart error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to clear cart',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-/**
- * @desc    Update delivery information
- * @route   PUT /api/cart/delivery-info
- * @access  Private
- */
 const updateDeliveryInfo = async (req, res) => {
   try {
-    const userId = req.user._id || req.userId;
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'User id missing from token' });
+    }
+
     const { deliveryAddress, specialInstructions, contactPhone } = req.body;
-    
     const cart = await Cart.getOrCreateCart(userId);
-    
+
     if (deliveryAddress) cart.deliveryInfo.deliveryAddress = deliveryAddress;
     if (specialInstructions) cart.deliveryInfo.specialInstructions = specialInstructions;
     if (contactPhone) cart.deliveryInfo.contactPhone = contactPhone;
-    
+
     await cart.save();
-    
+
     res.status(200).json({
       success: true,
       message: 'Delivery information updated',
-      data: cart.deliveryInfo
+      data: cart.deliveryInfo,
     });
   } catch (error) {
     console.error('Update delivery info error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to update delivery information',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-/**
- * @desc    Get cart summary (for checkout)
- * @route   GET /api/cart/summary
- * @access  Private
- */
 const getCartSummary = async (req, res) => {
   try {
-    const userId = req.user._id || req.userId;
-    
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'User id missing from token' });
+    }
+
     const cart = await Cart.getOrCreateCart(userId);
-    const populatedCart = await Cart.findById(cart._id)
-      .populate('items.productId', 'product_name price images stock');
-    
+    const populatedCart = await Cart.findById(cart._id).populate(
+      'items.productId',
+      'product_name price images stock',
+    );
+
     res.status(200).json({
       success: true,
       data: {
-        items: populatedCart.items.map(item => ({
+        items: populatedCart.items.map((item) => ({
+          lineKey: item.lineKey,
+          orderType: item.orderType,
           productId: item.productId?._id || item.productId,
           productName: item.productName,
           productPrice: item.productPrice,
@@ -308,19 +383,22 @@ const getCartSummary = async (req, res) => {
           isPreorder: item.isPreorder,
           customProduct: item.customProduct,
           notes: item.notes,
-          subtotal: (item.offeredPrice || item.productPrice) * item.quantity
+          subtotal:
+            (String(item.orderType || 'buy') === 'offer' && item.offeredPrice != null
+              ? Number(item.offeredPrice)
+              : Number(item.productPrice)) * item.quantity,
         })),
         summary: populatedCart.summary,
         deliveryInfo: populatedCart.deliveryInfo,
-        totalAmount: populatedCart.summary.totalAmount
-      }
+        totalAmount: populatedCart.summary.totalAmount,
+      },
     });
   } catch (error) {
     console.error('Get cart summary error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to get cart summary',
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -332,5 +410,5 @@ module.exports = {
   removeCartItem,
   clearCart,
   updateDeliveryInfo,
-  getCartSummary
+  getCartSummary,
 };
