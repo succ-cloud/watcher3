@@ -59,6 +59,8 @@ app.use('/api/admin', require('./src/routes/adminRoutes'));
 app.use('/api/users', require('./src/routes/userRoutes'));
 // Protect product routes with JWT
 // app.use(verifyJWT);
+// Cart routes
+app.use('/api/cart', require('./src/routes/cartRoutes'));
 app.use('/api', require('./src/routes/odersRoutes'));
 app.use('/api/products', require('./src/routes/itemsRoutes'));
 
