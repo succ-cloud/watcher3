@@ -18,7 +18,13 @@ router.get('/orders/:id', orderController.getOrderById);
 router.patch('/orders/:id/accept', orderController.acceptOrder);
 router.patch('/orders/:id/reject', orderController.rejectOrder);
 router.patch('/orders/:id/cancel', orderController.cancelOrder);
-
+/**
+ * DELETE /api/orders/:id
+ * @desc    Permanently delete an order
+ * @access  Admin or Order Owner
+ */
+router.delete('/orders/:id',orderController.deleteOrder
+);
 // DELIVERY ROUTES (Admin only)
 router.patch('/orders/:id/delivery', 
     verifyRole(ROLES_LIST.ADMIN), 
