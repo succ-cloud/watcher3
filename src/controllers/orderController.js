@@ -3,6 +3,7 @@ const { Order, ORDER_TYPES, ORDER_STATUS, NOTIFICATION_AUDIENCE, PRODUCT_SOURCE 
 const { Notification, NOTIFICATION_TYPES } = require('../models/Notification');
 const Product = require('../models/ItemsList');
 const User = require('../models/User');
+const Cart = require('../models/Cart');
 const whatsappService = require('../service/whatsappService');
 const orderQueueService = require('../service/orderQueueService');
 
@@ -581,6 +582,19 @@ async function createOrder(req, res) {
     await session.commitTransaction();
     session.endSession();
     
+    // ==================== CLEAR CART AFTER ORDER CREATION ====================
+    // Import Cart model at the top of your file
+    const Cart = require('../models/Cart');
+    
+    try {
+      await Cart.convertCartToOrder(userId);
+      console.log(`🛒 Cart converted to order for user ${userId}`);
+    } catch (cartError) {
+      console.error('Error clearing cart:', cartError);
+      // Don't fail the order if cart clear fails - just log
+    }
+    // ==================== END CLEAR CART ====================
+    
     let queueResult = null;
     const businessAddressForQueue = deliveryAddressFinal || user.businessAddress;
     
@@ -742,7 +756,6 @@ async function createOrder(req, res) {
     });
   }
 }
-
 /**
  * PATCH /api/orders/:id/accept
  * Accept an order and reduce stock (handles both catalog and custom products)
