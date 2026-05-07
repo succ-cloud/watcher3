@@ -110,11 +110,13 @@ const productSchema = new mongoose.Schema({
   }],
   
   // ==================== INVENTORY & PRICING ====================
+  // Denormalized primary image (kept in sync with images[].isPrimary in controller / pre-save)
   primaryImage: {
-  url: String,
-  publicId: String,
-  alt: String,
-},
+    url: String,
+    publicId: String,
+    alt: String,
+  },
+
   stock: {
     type: Number,
     required: [true, 'Stock quantity is required'],
@@ -281,15 +283,7 @@ const productSchema = new mongoose.Schema({
 });
 
 // ==================== VIRTUAL PROPERTIES ====================
-
-// Virtual for primary image
-productSchema.virtual('primaryImage').get(function() {
-  if (!this.images || !Array.isArray(this.images) || this.images.length === 0) {
-    return null;
-  }
-  const primaryImg = this.images.find(img => img.isPrimary);
-  return primaryImg || this.images[0] || null;
-});
+// primaryImage is a real schema path above — do not define a virtual with the same name (Mongoose error).
 
 // Virtual for formatted price
 productSchema.virtual('formattedPrice').get(function() {
@@ -384,7 +378,21 @@ productSchema.pre('save', function(next) {
   if (this.discountedPrice && this.price && this.discountedPrice >= this.price) {
     this.discountedPrice = null;
   }
-  
+
+  // Keep denormalized primaryImage in sync with images[].isPrimary
+  if (this.images && this.images.length > 0) {
+    const p = this.images.find((img) => img.isPrimary) || this.images[0];
+    if (p && p.url) {
+      this.primaryImage = {
+        url: p.url,
+        publicId: p.publicId,
+        alt: p.alt || this.product_name || 'product image',
+      };
+    }
+  } else {
+    this.primaryImage = undefined;
+  }
+
   next();
 });
 
