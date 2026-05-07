@@ -24,17 +24,28 @@ const productStorage = new CloudinaryStorage({
 // Configure storage for temporary uploads (if needed)
 const tempStorage = multer.memoryStorage();
 
-// File filter to validate image types
+// File filter — accept common image types; many browsers use `blob` (no extension) or octet-stream
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp/;
-  const extname = allowedTypes.test(file.originalname.toLowerCase());
-  const mimetype = allowedTypes.test(file.mimetype);
+  const name = String(file.originalname || '').toLowerCase();
+  const rawMime = String(file.mimetype || '').toLowerCase();
+  const mime = rawMime.split(';')[0].trim();
 
-  if (mimetype && extname) {
+  const extOk = /\.(jpe?g|png|gif|webp)$/i.test(name);
+  const mimeOk =
+    /^image\/(jpeg|pjpeg|png|gif|webp)$/i.test(mime) ||
+    mime === 'image/jpg' ||
+    mime === 'image/x-png' ||
+    mime === 'image/apng';
+  const octetOk = mime === 'application/octet-stream' && extOk;
+
+  if (mimeOk || extOk || octetOk) {
     return cb(null, true);
-  } else {
-    cb(new Error('Only image files are allowed'));
   }
+  cb(
+    new Error(
+      'Only image files are allowed (JPEG, PNG, GIF, WebP). If your file is valid, try renaming it to end in .jpg, .png, or .webp.',
+    ),
+  );
 };
 
 // Create multer upload instances
