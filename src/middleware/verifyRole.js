@@ -1,36 +1,34 @@
-const verifyRoles = (...allowedRoles) => {
-  return (req, res, next) => {
-      // Check if user exists and has role information
-      if (!req || !req.role) {
-          console.log('No role information found in request');
-          return res.status(401).json({ 
-              message: 'Unauthorized - No role information' 
-          });
-      }
-      
-      // Get the user's role (either from req.role or req.roles)
-      const userRole = req.role || (req.roles && req.roles[0]);
-      
-      if (!userRole) {
-          console.log('No role assigned to user');
-          return res.status(403).json({ 
-              message: 'Forbidden - No role assigned' 
-          });
-      }
-      
-      // Check if user's role is in the allowed roles
-      const isAllowed = allowedRoles.includes(userRole);
-      
-      if (!isAllowed) {
-          console.log(`Access denied. User role: ${userRole}, Required roles: ${allowedRoles}`);
-          return res.status(403).json({ 
-              message: `Forbidden - Requires one of these roles: ${allowedRoles.join(', ')}` 
-          });
-      }
-      
-      console.log(`Access granted for role: ${userRole}`);
-      next();
-  };
-};
+/** Normalize role strings from JWT / DB so Admin, wholesale, etc. match allow-lists. */
+function normalizeRoleToken(r) {
+  const s = String(r || '').toLowerCase().trim();
+  if (!s) return '';
+  if (s === 'administrator' || s === 'superadmin') return 'admin';
+  if (s === 'wholesale') return 'wholesaler';
+  return s;
+}
 
-module.exports = verifyRoles;
+/**
+ * @param {string|string[]} allowedRoles — role name(s) allowed (case-insensitive)
+ */
+function verifyRole(allowedRoles) {
+  const list = [].concat(allowedRoles || []).map((r) => normalizeRoleToken(r)).filter(Boolean);
+
+  return (req, res, next) => {
+    const fromUser = req.user?.role ?? req.user?.Role ?? req.user?.userRole ?? req.role;
+    const fromArr = Array.isArray(req.user?.roles) ? req.user.roles : [];
+    const candidates = [fromUser, ...fromArr].map((r) => normalizeRoleToken(r)).filter(Boolean);
+    const ok = list.some((allowed) => candidates.includes(allowed));
+    if (!ok) {
+      return res.status(403).json({
+        message:
+          list.length > 0
+            ? `Forbidden — requires one of these roles: ${list.join(',')}`
+            : 'Forbidden',
+        success: false,
+      });
+    }
+    next();
+  };
+}
+
+module.exports = verifyRole;
