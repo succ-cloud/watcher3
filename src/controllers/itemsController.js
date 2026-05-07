@@ -3,6 +3,84 @@ const { cloudinary } = require('../config/cloudinary');
 const productWhatsappService = require('../service/productWhatsapp');
 const broadcastQueue = require('../service/whatsappBroadcastQueue');
 
+// ----- Primary image helpers (images[].isPrimary + root primaryImage for API clients) -----
+
+/** 0-based index into the newly uploaded file batch; omit for defaults */
+function parsePrimaryNewImageIndex(raw) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+function extractPrimaryNewImageIndexFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const idx = parsePrimaryNewImageIndex(payload.primaryImageIndex ?? payload.primaryNewImageIndex);
+  delete payload.primaryImageIndex;
+  delete payload.primaryNewImageIndex;
+  return idx;
+}
+
+/** After pushing `newFileCount` images at the end of product.images */
+function applyPrimaryToNewBatch(product, newFileCount, primaryNewIndex) {
+  if (!newFileCount || newFileCount < 1) return;
+  const n = newFileCount;
+  const start = product.images.length - n;
+  if (start < 0) return;
+
+  if (primaryNewIndex != null) {
+    const idx = Math.min(Math.max(0, primaryNewIndex), n - 1);
+    product.images.forEach((img) => {
+      img.isPrimary = false;
+    });
+    product.images[start + idx].isPrimary = true;
+    return;
+  }
+
+  if (start > 0) {
+    for (let i = start; i < product.images.length; i += 1) {
+      product.images[i].isPrimary = false;
+    }
+    ensureSinglePrimary(product);
+    return;
+  }
+
+  product.images.forEach((img, i) => {
+    img.isPrimary = i === 0;
+  });
+}
+
+function ensureSinglePrimary(product) {
+  if (!product.images?.length) return;
+  const primaries = product.images.filter((img) => img.isPrimary);
+  if (primaries.length === 0) {
+    product.images[0].isPrimary = true;
+    return;
+  }
+  if (primaries.length === 1) return;
+  let keep = true;
+  product.images.forEach((img) => {
+    if (img.isPrimary) {
+      if (keep) keep = false;
+      else img.isPrimary = false;
+    }
+  });
+}
+
+/** Denormalized field used by storefront (primaryImage.url) */
+function syncPrimaryImageRoot(product) {
+  if (!product.images?.length) {
+    product.primaryImage = undefined;
+    return;
+  }
+  const p = product.images.find((img) => img.isPrimary) || product.images[0];
+  product.primaryImage = {
+    url: p.url,
+    publicId: p.publicId,
+    alt: p.alt || product.product_name || 'product image',
+  };
+}
+
 // ==================== BASIC CRUD OPERATIONS ====================
 
 // @desc    Create a new product with images
@@ -34,19 +112,23 @@ const createProduct = async (req, res) => {
     if (productData.price) productData.price = parseFloat(productData.price);
     if (productData.stock) productData.stock = parseInt(productData.stock);
 
+    const primaryNewIdx = extractPrimaryNewImageIndexFromPayload(productData);
+
     // Create new product
     const product = new Product(productData);
 
     // Handle uploaded images
     if (req.files && req.files.length > 0) {
-      req.files.forEach((file, index) => {
+      req.files.forEach((file) => {
         product.images.push({
           url: file.path,
           publicId: file.filename,
-          isPrimary: index === 0,
+          isPrimary: false,
           alt: productData.product_name || 'product image'
         });
       });
+      applyPrimaryToNewBatch(product, req.files.length, primaryNewIdx);
+      syncPrimaryImageRoot(product);
     }
 
     const savedProduct = await product.save();
@@ -250,6 +332,8 @@ const updateProduct = async (req, res) => {
     delete updates.__v;
     delete updates.images; // Don't update images directly through this endpoint
 
+    const primaryNewIdx = extractPrimaryNewImageIndexFromPayload(updates);
+
     // Convert numeric fields
     if (updates.price) updates.price = parseFloat(updates.price);
     if (updates.stock) updates.stock = parseInt(updates.stock);
@@ -271,15 +355,18 @@ const updateProduct = async (req, res) => {
 
     // Handle new images
     if (req.files && req.files.length > 0) {
-      req.files.forEach(file => {
+      req.files.forEach((file) => {
         product.images.push({
           url: file.path,
           publicId: file.filename,
-          isPrimary: product.images.length === 0, // First image becomes primary if none exist
+          isPrimary: false,
           alt: product.product_name || 'product image'
         });
       });
+      applyPrimaryToNewBatch(product, req.files.length, primaryNewIdx);
     }
+
+    syncPrimaryImageRoot(product);
 
     const updatedProduct = await product.save();
 
@@ -304,38 +391,31 @@ const updateProduct = async (req, res) => {
   }
 };
 
-// @desc    Partially update product
+// @desc    Partially update product (JSON or multipart with optional new images)
 // @route   PATCH /api/products/:id
 // @access  Public
 const patchProduct = async (req, res) => {
   try {
     let updates = req.body;
-    
+
     // Parse JSON fields if they come as strings
     if (typeof updates === 'string') {
       updates = JSON.parse(updates);
     }
-    
+
     // Remove fields that shouldn't be updated
     delete updates._id;
     delete updates.createdAt;
     delete updates.__v;
     delete updates.images;
 
-    // Convert numeric fields
-    if (updates.price) updates.price = parseFloat(updates.price);
-    if (updates.stock) updates.stock = parseInt(updates.stock);
+    const primaryNewIdx = extractPrimaryNewImageIndexFromPayload(updates);
 
-    // Find and update product (partial update)
-    const product = await Product.findByIdAndUpdate(
-      req.params.id,
-      { $set: updates },
-      {
-        new: true,
-        runValidators: true,
-        context: 'query'
-      }
-    );
+    // Convert numeric fields
+    if (updates.price !== undefined && updates.price !== '') updates.price = parseFloat(updates.price);
+    if (updates.stock !== undefined && updates.stock !== '') updates.stock = parseInt(updates.stock, 10);
+
+    const product = await Product.findById(req.params.id);
 
     if (!product) {
       return res.status(404).json({
@@ -344,10 +424,32 @@ const patchProduct = async (req, res) => {
       });
     }
 
+    Object.keys(updates).forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(updates, key)) {
+        product[key] = updates[key];
+      }
+    });
+
+    if (req.files && req.files.length > 0) {
+      req.files.forEach((file) => {
+        product.images.push({
+          url: file.path,
+          publicId: file.filename,
+          isPrimary: false,
+          alt: product.product_name || 'product image'
+        });
+      });
+      applyPrimaryToNewBatch(product, req.files.length, primaryNewIdx);
+    }
+
+    syncPrimaryImageRoot(product);
+
+    const saved = await product.save();
+
     res.status(200).json({
       success: true,
       message: 'Product updated successfully',
-      data: product
+      data: saved
     });
   } catch (error) {
     console.error('Patch product error:', error);
@@ -812,15 +914,21 @@ const addProductImages = async (req, res) => {
       });
     }
 
+    const primaryNewIdx = parsePrimaryNewImageIndex(
+      req.body?.primaryImageIndex ?? req.body?.primaryNewImageIndex
+    );
+
     // Add images
-    req.files.forEach(file => {
+    req.files.forEach((file) => {
       product.images.push({
         url: file.path,
         publicId: file.filename,
-        isPrimary: product.images.length === 0, // First image becomes primary if none exist
+        isPrimary: false,
         alt: product.product_name || 'product image'
       });
     });
+    applyPrimaryToNewBatch(product, req.files.length, primaryNewIdx);
+    syncPrimaryImageRoot(product);
 
     const updatedProduct = await product.save();
 
@@ -850,7 +958,13 @@ const addProductImages = async (req, res) => {
 // @access  Public
 const deleteProductImage = async (req, res) => {
   try {
-    const { id, publicId } = req.params;
+    const { id } = req.params;
+    let { publicId } = req.params;
+    try {
+      publicId = decodeURIComponent(publicId);
+    } catch {
+      /* keep encoded */
+    }
 
     const product = await Product.findById(id);
 
@@ -890,6 +1004,8 @@ const deleteProductImage = async (req, res) => {
       product.images[0].isPrimary = true;
     }
 
+    syncPrimaryImageRoot(product);
+
     const updatedProduct = await product.save();
 
     res.status(200).json({
@@ -918,7 +1034,13 @@ const deleteProductImage = async (req, res) => {
 // @access  Public
 const setPrimaryImage = async (req, res) => {
   try {
-    const { id, publicId } = req.params;
+    const { id } = req.params;
+    let { publicId } = req.params;
+    try {
+      publicId = decodeURIComponent(publicId);
+    } catch {
+      /* keep encoded */
+    }
 
     const product = await Product.findById(id);
 
@@ -943,6 +1065,7 @@ const setPrimaryImage = async (req, res) => {
     product.images.forEach(img => {
       img.isPrimary = img.publicId === publicId;
     });
+    syncPrimaryImageRoot(product);
 
     const updatedProduct = await product.save();
 
@@ -1054,6 +1177,7 @@ const bulkUploadImages = async (req, res) => {
           });
         });
 
+        syncPrimaryImageRoot(product);
         await product.save();
         results.push({ 
           productId, 
