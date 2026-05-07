@@ -54,7 +54,14 @@ const userSchema = new mongoose.Schema({
       message: 'Please enter a valid 9-digit phone number (e.g., 677184257 or +237677184257)'
     }
   },
-  
+
+  email: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    maxlength: [320, 'Email is too long'],
+  },
+
   whatsappNumber: {
     type: String,
     required: [true, 'WhatsApp number is required'],
