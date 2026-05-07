@@ -110,6 +110,11 @@ const productSchema = new mongoose.Schema({
   }],
   
   // ==================== INVENTORY & PRICING ====================
+  primaryImage: {
+  url: String,
+  publicId: String,
+  alt: String,
+}
   stock: {
     type: Number,
     required: [true, 'Stock quantity is required'],
