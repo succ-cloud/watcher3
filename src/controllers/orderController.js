@@ -820,6 +820,10 @@ async function acceptOrder(req, res) {
     
     let product = null;
     let stockUpdateInfo = null;
+
+    /** Catalog BUY: `createOrder` already decremented stock — do not deduct again on accept. */
+    const skipStockDeductionOnAccept =
+      order.orderType === ORDER_TYPES.BUY && !order.isCustomProduct;
     
     if (!order.isCustomProduct && order.productId && order.productSource === 'catalog') {
       product = await Product.findById(order.productId);
@@ -831,29 +835,35 @@ async function acceptOrder(req, res) {
         });
       }
       
-      if (product.stock < order.quantity) {
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient stock. Available: ${product.stock}, Required: ${order.quantity}`,
-          availableStock: product.stock,
-          requiredQuantity: order.quantity
-        });
+      if (skipStockDeductionOnAccept) {
+        console.log(
+          `📝 Buy order ${order._id}: stock was already reduced when the order was created; skipping accept-time deduction.`,
+        );
+      } else {
+        if (product.stock < order.quantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient stock. Available: ${product.stock}, Required: ${order.quantity}`,
+            availableStock: product.stock,
+            requiredQuantity: order.quantity
+          });
+        }
+        
+        product.stock -= order.quantity;
+        await product.save();
+        
+        stockUpdateInfo = {
+          productId: product._id,
+          productName: product.product_name,
+          quantityDeducted: order.quantity,
+          remainingStock: product.stock
+        };
+        
+        console.log(`✅ Stock deducted for product ${product.product_name}:`);
+        console.log(`   - Order ID: ${order._id}`);
+        console.log(`   - Quantity deducted: ${order.quantity}`);
+        console.log(`   - Remaining stock: ${product.stock}`);
       }
-      
-      product.stock -= order.quantity;
-      await product.save();
-      
-      stockUpdateInfo = {
-        productId: product._id,
-        productName: product.product_name,
-        quantityDeducted: order.quantity,
-        remainingStock: product.stock
-      };
-      
-      console.log(`✅ Stock deducted for product ${product.product_name}:`);
-      console.log(`   - Order ID: ${order._id}`);
-      console.log(`   - Quantity deducted: ${order.quantity}`);
-      console.log(`   - Remaining stock: ${product.stock}`);
     } else {
       console.log(`📝 Custom preorder accepted - no stock deduction required`);
       console.log(`   - Order ID: ${order._id}`);
