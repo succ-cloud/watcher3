@@ -29,10 +29,15 @@ const PRODUCT_SOURCE = {
 };
 
 const orderSchema = new mongoose.Schema(
-  {},
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    handledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  },
   {
     collection: 'orders',
     strict: false,
+    strictPopulate: false,
     timestamps: false,
   },
 );
