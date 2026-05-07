@@ -7,6 +7,7 @@ const verifyJWT = require('../middleware/verifyJWT');
 
 // ==================== IMAGE UPLOAD ROUTES ====================
 
+// Multipart fields (optional): primaryImageIndex | primaryNewImageIndex — 0-based index among files in this upload batch
 router.post(
   '/:id/images', 
   uploadProductImages.array('images', 10),
@@ -50,6 +51,7 @@ router.post(
 
 // ==================== PRODUCT CRUD ROUTES ====================
 
+// Multipart: optional primaryImageIndex | primaryNewImageIndex (0-based among uploaded files)
 router.post(
   '/', 
   verifyJWT,
@@ -64,7 +66,13 @@ router.put(
   productController.updateProduct
 );
 
-router.patch('/:id', verifyJWT, productController.patchProduct);
+// Multipart (optional images) + primaryImageIndex | primaryNewImageIndex on new file batch
+router.patch(
+  '/:id',
+  verifyJWT,
+  uploadProductImages.array('images', 10),
+  productController.patchProduct
+);
 
 router.delete('/:id', verifyJWT, productController.deleteProduct);
 
