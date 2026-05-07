@@ -1090,6 +1090,67 @@ const setPrimaryImage = async (req, res) => {
   }
 };
 
+// @desc    Set primary image (body.publicId — supports Cloudinary ids with slashes)
+// @route   PATCH /api/products/:id/images/primary
+// @access  Private
+const setPrimaryImageFromBody = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const publicId = String(req.body?.publicId ?? '').trim();
+
+    if (!publicId) {
+      return res.status(400).json({
+        success: false,
+        message: 'publicId is required in request body',
+      });
+    }
+
+    const product = await Product.findById(id);
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found',
+      });
+    }
+
+    const imageExists = product.images.some((img) => img.publicId === publicId);
+
+    if (!imageExists) {
+      return res.status(404).json({
+        success: false,
+        message: 'Image not found',
+      });
+    }
+
+    product.images.forEach((img) => {
+      img.isPrimary = img.publicId === publicId;
+    });
+    syncPrimaryImageRoot(product);
+
+    const updatedProduct = await product.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Primary image updated',
+      data: updatedProduct,
+    });
+  } catch (error) {
+    console.error('Set primary image (body) error:', error);
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid product ID format',
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: 'Error setting primary image',
+      error: error.message,
+    });
+  }
+};
+
 // @desc    Get product images
 // @route   GET /api/products/:id/images
 // @access  Public
@@ -1772,6 +1833,7 @@ module.exports = {
   addProductImages,
   deleteProductImage,
   setPrimaryImage,
+  setPrimaryImageFromBody,
   getProductImages,
   bulkUploadImages,
   
