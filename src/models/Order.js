@@ -15,6 +15,7 @@ const ORDER_STATUS = {
   ACCEPTED: 'accepted',
   REJECTED: 'rejected',
   CANCELLED: 'cancelled',
+  DELIVERED: 'delivered',
 };
 
 const NOTIFICATION_AUDIENCE = {
@@ -41,6 +42,53 @@ const orderSchema = new mongoose.Schema(
     timestamps: false,
   },
 );
+
+// Instance helpers used by orderController (accept / reject / cancel / delivery PATCH)
+orderSchema.methods.accept = async function acceptOrderDoc(handledById, finalPrice, deliveryData) {
+  this.status = ORDER_STATUS.ACCEPTED;
+  this.handledBy = handledById;
+  if (finalPrice != null && finalPrice !== '' && Number.isFinite(Number(finalPrice))) {
+    this.finalPrice = Number(finalPrice);
+  }
+  this.handledAt = new Date();
+  if (deliveryData && typeof deliveryData === 'object' && Object.keys(deliveryData).length > 0) {
+    const base =
+      this.deliveryInfo &&
+      typeof this.deliveryInfo === 'object' &&
+      !Array.isArray(this.deliveryInfo)
+        ? { ...this.deliveryInfo }
+        : {};
+    this.deliveryInfo = { ...base, ...deliveryData };
+  }
+  return this.save();
+};
+
+orderSchema.methods.reject = async function rejectOrderDoc(handledById, rejectionReason) {
+  this.status = ORDER_STATUS.REJECTED;
+  this.handledBy = handledById;
+  this.rejectionReason = String(rejectionReason || '');
+  this.handledAt = new Date();
+  return this.save();
+};
+
+orderSchema.methods.cancel = async function cancelOrderDoc() {
+  this.status = ORDER_STATUS.CANCELLED;
+  return this.save();
+};
+
+orderSchema.methods.updateDeliveryInfo = async function updateDeliveryInfoDoc(deliveryData) {
+  if (!deliveryData || typeof deliveryData !== 'object') {
+    return this.save();
+  }
+  const base =
+    this.deliveryInfo &&
+    typeof this.deliveryInfo === 'object' &&
+    !Array.isArray(this.deliveryInfo)
+      ? { ...this.deliveryInfo }
+      : {};
+  this.deliveryInfo = { ...base, ...deliveryData };
+  return this.save();
+};
 
 const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
 
