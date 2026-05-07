@@ -3,6 +3,15 @@ const { cloudinary } = require('../config/cloudinary');
 const productWhatsappService = require('../service/productWhatsapp');
 const broadcastQueue = require('../service/whatsappBroadcastQueue');
 
+/** ItemsList schema allows only ASCII city keys; map UI / legacy spellings */
+function normalizeProductPhoneLocation(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return s;
+  const lower = s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (lower === 'yaounde') return 'Yaounde';
+  return s;
+}
+
 // ----- Primary image helpers (images[].isPrimary + root primaryImage for API clients) -----
 
 /** 0-based index into the newly uploaded file batch; omit for defaults */
@@ -112,6 +121,10 @@ const createProduct = async (req, res) => {
     if (productData.price) productData.price = parseFloat(productData.price);
     if (productData.stock) productData.stock = parseInt(productData.stock);
 
+    if (productData.phoneLocation != null) {
+      productData.phoneLocation = normalizeProductPhoneLocation(productData.phoneLocation);
+    }
+
     const primaryNewIdx = extractPrimaryNewImageIndexFromPayload(productData);
 
     // Create new product
@@ -153,6 +166,14 @@ const createProduct = async (req, res) => {
     });
   } catch (error) {
     console.error('Create product error:', error);
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors || {}).map((e) => e.message);
+      return res.status(400).json({
+        success: false,
+        message: messages.length ? messages.join(' ') : error.message,
+        error: error.message,
+      });
+    }
     res.status(500).json({
       success: false,
       message: 'Error creating product',
@@ -338,6 +359,10 @@ const updateProduct = async (req, res) => {
     if (updates.price) updates.price = parseFloat(updates.price);
     if (updates.stock) updates.stock = parseInt(updates.stock);
 
+    if (updates.phoneLocation != null) {
+      updates.phoneLocation = normalizeProductPhoneLocation(updates.phoneLocation);
+    }
+
     // Find product
     const product = await Product.findById(req.params.id);
 
@@ -414,6 +439,10 @@ const patchProduct = async (req, res) => {
     // Convert numeric fields
     if (updates.price !== undefined && updates.price !== '') updates.price = parseFloat(updates.price);
     if (updates.stock !== undefined && updates.stock !== '') updates.stock = parseInt(updates.stock, 10);
+
+    if (updates.phoneLocation != null) {
+      updates.phoneLocation = normalizeProductPhoneLocation(updates.phoneLocation);
+    }
 
     const product = await Product.findById(req.params.id);
 
