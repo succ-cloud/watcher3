@@ -80,9 +80,6 @@ const productSchema = new mongoose.Schema({
   IME: {
     type: String,
     trim: true,
-    unique: true,
-    sparse: true,
-    default: null
   },
   
   // ==================== IMAGES ====================
@@ -368,11 +365,32 @@ productSchema.index({ phoneLocation: 1, isActive: 1 });
 productSchema.index({ brand: 1, product_type: 1 });
 productSchema.index({ whatsappNotificationSent: 1, createdAt: -1 });
 
+/**
+ * After deploy: if create still fails on IME_1, rebuild the index in mongosh:
+ *   use paylink
+ *   db.products.dropIndex("IME_1")
+ * Then restart the app so Mongoose creates the partial unique index, or run syncIndexes once.
+ */
+productSchema.index(
+  { IME: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { IME: { $type: 'string', $gt: '' } },
+  },
+);
+
 // ==================== PRE-SAVE MIDDLEWARE ====================
 
 // Update timestamp on save
 productSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
+
+  const ime = this.get('IME');
+  if (ime == null || String(ime).trim() === '') {
+    this.set('IME', undefined);
+  } else {
+    this.set('IME', String(ime).trim());
+  }
   
   // Clear discounted price if it's not less than original price
   if (this.discountedPrice && this.price && this.discountedPrice >= this.price) {
