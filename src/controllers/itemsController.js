@@ -12,6 +12,17 @@ function normalizeProductPhoneLocation(raw) {
   return s;
 }
 
+/** Drop IME on plain objects when empty so inserts are not indexed as duplicate null. */
+function normalizeImeOnPlainObject(obj) {
+  if (!obj || typeof obj !== 'object' || !Object.prototype.hasOwnProperty.call(obj, 'IME')) return;
+  const raw = obj.IME;
+  if (raw == null || String(raw).trim() === '') {
+    delete obj.IME;
+    return;
+  }
+  obj.IME = String(raw).trim();
+}
+
 // ----- Primary image helpers (images[].isPrimary + root primaryImage for API clients) -----
 
 /** 0-based index into the newly uploaded file batch; omit for defaults */
@@ -125,6 +136,8 @@ const createProduct = async (req, res) => {
       productData.phoneLocation = normalizeProductPhoneLocation(productData.phoneLocation);
     }
 
+    normalizeImeOnPlainObject(productData);
+
     const primaryNewIdx = extractPrimaryNewImageIndexFromPayload(productData);
 
     // Create new product
@@ -166,6 +179,13 @@ const createProduct = async (req, res) => {
     });
   } catch (error) {
     console.error('Create product error:', error);
+    if (error.code === 11000 && String(error.message || '').includes('IME')) {
+      return res.status(400).json({
+        success: false,
+        message: 'A product with this IME already exists. Use a different IME or leave IME blank.',
+        error: error.message,
+      });
+    }
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors || {}).map((e) => e.message);
       return res.status(400).json({
@@ -363,6 +383,10 @@ const updateProduct = async (req, res) => {
       updates.phoneLocation = normalizeProductPhoneLocation(updates.phoneLocation);
     }
 
+    const hadImeKey = Object.prototype.hasOwnProperty.call(updates, 'IME');
+    normalizeImeOnPlainObject(updates);
+    const shouldUnsetIme = hadImeKey && !Object.prototype.hasOwnProperty.call(updates, 'IME');
+
     // Find product
     const product = await Product.findById(req.params.id);
 
@@ -377,6 +401,10 @@ const updateProduct = async (req, res) => {
     Object.keys(updates).forEach(key => {
       product[key] = updates[key];
     });
+
+    if (shouldUnsetIme) {
+      product.set('IME', undefined);
+    }
 
     // Handle new images
     if (req.files && req.files.length > 0) {
@@ -444,6 +472,10 @@ const patchProduct = async (req, res) => {
       updates.phoneLocation = normalizeProductPhoneLocation(updates.phoneLocation);
     }
 
+    const hadImeKey = Object.prototype.hasOwnProperty.call(updates, 'IME');
+    normalizeImeOnPlainObject(updates);
+    const shouldUnsetIme = hadImeKey && !Object.prototype.hasOwnProperty.call(updates, 'IME');
+
     const product = await Product.findById(req.params.id);
 
     if (!product) {
@@ -458,6 +490,10 @@ const patchProduct = async (req, res) => {
         product[key] = updates[key];
       }
     });
+
+    if (shouldUnsetIme) {
+      product.set('IME', undefined);
+    }
 
     if (req.files && req.files.length > 0) {
       req.files.forEach((file) => {
@@ -740,11 +776,15 @@ const bulkCreateProducts = async (req, res) => {
     }
 
     // Convert numeric fields for each product
-    products = products.map(product => ({
-      ...product,
-      price: parseFloat(product.price) || 0,
-      stock: parseInt(product.stock) || 0
-    }));
+    products = products.map((product) => {
+      const row = {
+        ...product,
+        price: parseFloat(product.price) || 0,
+        stock: parseInt(product.stock, 10) || 0,
+      };
+      normalizeImeOnPlainObject(row);
+      return row;
+    });
 
     // Insert multiple products
     const createdProducts = await Product.insertMany(products, {
@@ -1629,7 +1669,9 @@ const cloneProduct = async (req, res) => {
 
     // Modify name to indicate it's a copy
     productData.product_name = `${productData.product_name} (Copy)`;
-    
+
+    normalizeImeOnPlainObject(productData);
+
     // Don't clone images (optional - you can decide to clone or not)
     // productData.images = []; // Uncomment if you don't want to clone images
 
