@@ -6,7 +6,7 @@ const allowedOrigins=
         'http://localhost:3001',
      
         'http://localhost:3000',
-        'https://wacheit.netlify.app'
+        'https://wacheelectronics.com'
 
 ];
 
