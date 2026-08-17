@@ -59,6 +59,16 @@ const productSchema = new mongoose.Schema({
     max: [100, 'Battery health must be between 0 and 100'],
     default: null,
   },
+
+  /** Optional device condition when returned to inventory (e.g. after exchange). */
+  conditionStatus: {
+    type: String,
+    enum: {
+      values: ['Normal', 'Faulty'],
+      message: 'Condition status must be Normal or Faulty',
+    },
+    default: null,
+  },
   
   // Phone Location Information
   phoneLocation: {

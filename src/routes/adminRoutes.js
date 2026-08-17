@@ -140,4 +140,6 @@ router.patch('/stock-requests/:requestId', warehouseHubHandler('updateStockReque
 const salesReportController = require('../controllers/salesReportController');
 router.get('/reports/monthly-sales', salesReportController.getMonthlySalesReport);
 
+router.use('/exchange', require('./exchangeRoutes'));
+
 module.exports = router;
