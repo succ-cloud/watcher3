@@ -126,6 +126,60 @@ function resolveExchangePayment(priceDifference, amountCollectedRaw, amountRefun
   return { amountCollected: null, amountRefunded: null, discountOwed: null };
 }
 
+async function buildAvailableInventoryMatches(excludeIme, filters = {}, session = null) {
+  const phoneNameFilter = String(filters.phoneName || '').trim().toLowerCase();
+  const imeFilter = String(filters.ime || filters.imeFilter || '').trim().toLowerCase();
+
+  const q = Product.find({
+    isActive: { $ne: false },
+    stock: { $gt: 0 },
+    $or: [{ IME: { $gt: '' } }, { 'imeCodes.0': { $exists: true } }],
+  })
+    .populate(WAREHOUSE_POPULATE)
+    .sort({ product_name: 1, capacity: 1 });
+  if (session) q.session(session);
+  const candidates = await q.lean();
+
+  const exclude = String(excludeIme || '').trim().toLowerCase();
+  const allImes = [];
+  for (const product of candidates) {
+    for (const ime of normalizedImeList(product)) {
+      if (exclude && ime.toLowerCase() === exclude) continue;
+      allImes.push(ime);
+    }
+  }
+
+  const soldSet = await fetchActiveSoldImeSet(allImes, session);
+  const availableMatches = [];
+
+  for (const product of candidates) {
+    for (const ime of normalizedImeList(product)) {
+      if (exclude && ime.toLowerCase() === exclude) continue;
+      if (soldSet.has(ime)) continue;
+
+      const phoneName = String(product.product_name || '');
+      const storage = String(product.capacity || '');
+      if (phoneNameFilter && !phoneName.toLowerCase().includes(phoneNameFilter)) continue;
+      if (imeFilter && !ime.toLowerCase().includes(imeFilter)) continue;
+
+      const wh = product.currentWarehouse;
+      availableMatches.push({
+        ime,
+        productId: String(product._id),
+        phoneName,
+        storage,
+        price: resolveProductUnitPrice(product),
+        color: product.color || '',
+        warehouse: wh && typeof wh === 'object'
+          ? { id: String(wh._id || ''), name: wh.name || '', city: wh.city || '' }
+          : null,
+      });
+    }
+  }
+
+  return availableMatches;
+}
+
 async function fetchActiveSoldImeSet(imeList, session = null) {
   const trimmed = [...new Set(imeList.map((c) => String(c || '').trim()).filter(Boolean))];
   if (!trimmed.length) return new Set();
@@ -253,48 +307,12 @@ async function checkExchangeIme(req, res) {
 
     const phoneName = String(soldRecord.productName || '').trim();
     const storage = String(soldRecord.capacity || '').trim();
-    const nameRegex = phoneName ? new RegExp(`^${escapeRegex(phoneName)}$`, 'i') : null;
-    const storageRegex = storage ? new RegExp(`^${escapeRegex(storage)}$`, 'i') : null;
-
-    const productFilter = {
-      isActive: { $ne: false },
-      stock: { $gt: 0 },
-    };
-    if (nameRegex) productFilter.product_name = nameRegex;
-    if (storageRegex) productFilter.capacity = storageRegex;
-
-    const candidates = await Product.find(productFilter)
-      .populate(WAREHOUSE_POPULATE)
-      .lean();
-
-    const allImes = [];
-    for (const product of candidates) {
-      for (const ime of normalizedImeList(product)) {
-        if (ime.toLowerCase() !== query.toLowerCase()) allImes.push(ime);
-      }
-    }
-
-    const soldSet = await fetchActiveSoldImeSet(allImes);
-    const availableMatches = [];
-
-    for (const product of candidates) {
-      for (const ime of normalizedImeList(product)) {
-        if (ime.toLowerCase() === query.toLowerCase()) continue;
-        if (soldSet.has(ime)) continue;
-        const wh = product.currentWarehouse;
-        availableMatches.push({
-          ime,
-          productId: String(product._id),
-          phoneName: product.product_name || phoneName,
-          storage: product.capacity || storage,
-          price: resolveProductUnitPrice(product),
-          color: product.color || '',
-          warehouse: wh && typeof wh === 'object'
-            ? { id: String(wh._id || ''), name: wh.name || '', city: wh.city || '' }
-            : null,
-        });
-      }
-    }
+    const replacementPhoneName = String(req.query.replacementPhoneName || req.query.phoneName || '').trim();
+    const replacementIme = String(req.query.replacementIme || req.query.replacementImeFilter || '').trim();
+    const availableMatches = await buildAvailableInventoryMatches(query, {
+      phoneName: replacementPhoneName,
+      ime: replacementIme,
+    });
 
     const handledBy =
       soldRecord.handledBy && typeof soldRecord.handledBy === 'object' ? soldRecord.handledBy : null;
@@ -322,6 +340,29 @@ async function checkExchangeIme(req, res) {
     return res.status(500).json({
       success: false,
       message: 'Could not check this IME.',
+    });
+  }
+}
+
+/** GET /api/admin/exchange/available-replacements — unsold inventory for replacement picker */
+async function getAvailableReplacements(req, res) {
+  try {
+    const excludeIme = String(req.query.excludeIme || req.query.originalIME || '').trim();
+    const phoneName = String(req.query.phoneName || req.query.replacementPhoneName || '').trim();
+    const ime = String(req.query.ime || req.query.replacementIme || '').trim();
+
+    const availableMatches = await buildAvailableInventoryMatches(excludeIme, { phoneName, ime });
+
+    return res.status(200).json({
+      success: true,
+      count: availableMatches.length,
+      data: availableMatches,
+    });
+  } catch (error) {
+    console.error('getAvailableReplacements:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Could not load available replacement phones.',
     });
   }
 }
@@ -423,26 +464,8 @@ async function processExchange(req, res) {
         throw err;
       }
 
-      const phoneName = String(sold.productName || newProduct.product_name || '').trim();
-      const storage = String(sold.capacity || newProduct.capacity || '').trim();
-      if (
-        phoneName &&
-        newProduct.product_name &&
-        phoneName.toLowerCase() !== String(newProduct.product_name).toLowerCase()
-      ) {
-        const err = new Error('Replacement phone must match the original phone name.');
-        err.status = 400;
-        throw err;
-      }
-      if (
-        storage &&
-        newProduct.capacity &&
-        storage.toLowerCase() !== String(newProduct.capacity).toLowerCase()
-      ) {
-        const err = new Error('Replacement phone must match the original storage capacity.');
-        err.status = 400;
-        throw err;
-      }
+      const originalPhoneName = String(sold.productName || '').trim();
+      const originalStorage = String(sold.capacity || '').trim();
 
       const originalProduct = await Product.findById(sold.productId).session(session);
       if (!originalProduct) {
@@ -544,8 +567,8 @@ async function processExchange(req, res) {
           {
             originalIME: ime,
             newIME,
-            phoneName: phoneName || newProduct.product_name || '',
-            storage: storage || newProduct.capacity || '',
+            phoneName: originalPhoneName,
+            storage: originalStorage,
             exchangeDate: new Date(),
             processedBy: adminId,
             priceDifference,
@@ -563,8 +586,10 @@ async function processExchange(req, res) {
         exchangeId: String(exchangeRecord[0]._id),
         originalIME: ime,
         newIME,
-        phoneName: phoneName || newProduct.product_name || '',
-        storage: storage || newProduct.capacity || '',
+        phoneName: originalPhoneName,
+        storage: originalStorage,
+        replacementPhoneName: newProduct.product_name || '',
+        replacementStorage: newProduct.capacity || '',
         conditionStatus: status,
         priceDifference,
         amountCollected: payment.amountCollected,
@@ -596,6 +621,7 @@ module.exports = {
   getSalesByMonth,
   getSalesByPhoneName,
   checkExchangeIme,
+  getAvailableReplacements,
   processExchange,
   EXCHANGE_CONDITION_STATUS,
 };

@@ -6,6 +6,7 @@ const {
   getSalesByMonth,
   getSalesByPhoneName,
   checkExchangeIme,
+  getAvailableReplacements,
   processExchange,
 } = require('../controllers/exchangeController');
 
@@ -17,6 +18,7 @@ router.use(verifyRole(ROLES.ADMIN));
 router.get('/sales-by-month', getSalesByMonth);
 router.get('/sales-by-phone-name', getSalesByPhoneName);
 router.get('/check-ime', checkExchangeIme);
+router.get('/available-replacements', getAvailableReplacements);
 router.post('/process-exchange', processExchange);
 
 module.exports = router;
