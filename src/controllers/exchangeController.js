@@ -74,6 +74,58 @@ function resolveProductUnitPrice(product) {
   return null;
 }
 
+function parseOptionalMoney(raw) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(String(raw).replace(/,/g, '').trim());
+  if (!Number.isFinite(n) || n < 0) return NaN;
+  return n;
+}
+
+function resolveExchangePayment(priceDifference, amountCollectedRaw, amountRefundedRaw) {
+  const amountCollected = parseOptionalMoney(amountCollectedRaw);
+  const amountRefunded = parseOptionalMoney(amountRefundedRaw);
+
+  if (priceDifference == null || !Number.isFinite(priceDifference)) {
+    return { amountCollected: null, amountRefunded: null, discountOwed: null };
+  }
+
+  if (priceDifference > 0) {
+    if (amountCollected == null || Number.isNaN(amountCollected)) {
+      const err = new Error(
+        `amountCollected is required and must be at least ${priceDifference}.`,
+      );
+      err.status = 400;
+      throw err;
+    }
+    if (amountCollected < priceDifference) {
+      const err = new Error(
+        `amountCollected must be at least ${priceDifference} (minimum required for this price difference).`,
+      );
+      err.status = 400;
+      throw err;
+    }
+    return { amountCollected, amountRefunded: null, discountOwed: null };
+  }
+
+  if (priceDifference < 0) {
+    const discountOwed = Math.abs(priceDifference);
+    if (amountRefundedRaw !== undefined && amountRefundedRaw !== null && amountRefundedRaw !== '') {
+      if (Number.isNaN(amountRefunded)) {
+        const err = new Error('amountRefunded must be a valid non-negative number when provided.');
+        err.status = 400;
+        throw err;
+      }
+    }
+    return {
+      amountCollected: null,
+      amountRefunded: amountRefunded != null && !Number.isNaN(amountRefunded) ? amountRefunded : null,
+      discountOwed,
+    };
+  }
+
+  return { amountCollected: null, amountRefunded: null, discountOwed: null };
+}
+
 async function fetchActiveSoldImeSet(imeList, session = null) {
   const trimmed = [...new Set(imeList.map((c) => String(c || '').trim()).filter(Boolean))];
   if (!trimmed.length) return new Set();
@@ -308,6 +360,8 @@ async function processExchange(req, res) {
     const newIME = String(req.body?.newIME || '').trim();
     const status = String(req.body?.status || '').trim();
     const notes = String(req.body?.notes || '').trim();
+    const amountCollectedRaw = req.body?.amountCollected;
+    const amountRefundedRaw = req.body?.amountRefunded;
     const adminId = req.user?.userId || req.user?.id || req.userId || null;
 
     if (!originalIME || !newIME) {
@@ -397,6 +451,12 @@ async function processExchange(req, res) {
         throw err;
       }
 
+      const originalUnitPrice = resolveUnitPrice(sold, originalProduct);
+      const newUnitPrice = resolveProductUnitPrice(newProduct);
+      const priceDifference =
+        originalUnitPrice != null && newUnitPrice != null ? newUnitPrice - originalUnitPrice : null;
+      const payment = resolveExchangePayment(priceDifference, amountCollectedRaw, amountRefundedRaw);
+
       const ime = String(sold.ime || '').trim();
       const currentCodes = normalizedImeList(originalProduct);
       if (!currentCodes.includes(ime)) {
@@ -452,11 +512,6 @@ async function processExchange(req, res) {
 
       await SoldIme.deleteOne({ _id: sold._id }).session(session);
 
-      const originalUnitPrice = resolveUnitPrice(sold, originalProduct);
-      const newUnitPrice = resolveProductUnitPrice(newProduct);
-      const priceDifference =
-        originalUnitPrice != null && newUnitPrice != null ? newUnitPrice - originalUnitPrice : null;
-
       await SoldIme.create(
         [
           {
@@ -494,6 +549,8 @@ async function processExchange(req, res) {
             exchangeDate: new Date(),
             processedBy: adminId,
             priceDifference,
+            amountCollected: payment.amountCollected,
+            amountRefunded: payment.amountRefunded,
             notes,
           },
         ],
@@ -510,6 +567,9 @@ async function processExchange(req, res) {
         storage: storage || newProduct.capacity || '',
         conditionStatus: status,
         priceDifference,
+        amountCollected: payment.amountCollected,
+        amountRefunded: payment.amountRefunded,
+        discountOwed: payment.discountOwed,
         processedBy: {
           id: String(adminId),
           name: admin?.name || '',

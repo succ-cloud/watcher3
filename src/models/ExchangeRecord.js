@@ -9,6 +9,8 @@ const exchangeRecordSchema = new mongoose.Schema(
     exchangeDate: { type: Date, default: Date.now, index: true },
     processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     priceDifference: { type: Number, default: null },
+    amountCollected: { type: Number, default: null, min: 0 },
+    amountRefunded: { type: Number, default: null, min: 0 },
     notes: { type: String, trim: true, default: '' },
   },
   { timestamps: true },
