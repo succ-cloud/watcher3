@@ -1,5 +1,5 @@
 const Product = require('../models/ItemsList');
-const { normalizeProductPhoneLocation } = require('./normalizeProductPhoneLocation');
+const { resolveProductPhoneLocationForWarehouse } = require('./normalizeProductPhoneLocation');
 const { applyImeFields, normalizedImeList, splitImeCodes, takeSpecificImeCodes } = require('./productIme');
 
 /**
@@ -45,8 +45,9 @@ async function applyProductArrival(product, subWarehouse, userId, note) {
   product.shipmentStatus = 'arrived';
   product.arrivedAt = new Date();
   product.originWarehouse = null;
-  if (subWarehouse.city) {
-    product.phoneLocation = normalizeProductPhoneLocation(subWarehouse.city);
+  const location = resolveProductPhoneLocationForWarehouse(subWarehouse);
+  if (location) {
+    product.phoneLocation = location;
   }
   if (userId) product.updatedBy = userId;
 

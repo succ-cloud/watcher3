@@ -25,7 +25,7 @@ const warehouseSchema = new mongoose.Schema(
       ref: 'Warehouse',
       default: null,
     },
-    /** City label aligned with product `phoneLocation` enum. */
+    /** Region/city grouping label; product phoneLocation may use the shop name instead. */
     city: {
       type: String,
       trim: true,

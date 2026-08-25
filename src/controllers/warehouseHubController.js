@@ -27,7 +27,7 @@ const {
   sumReadyToTransferUnitsAtWarehouse,
   countOnHandProductNamesAtWarehouse,
 } = require('../utils/warehouseInventoryStats');
-const { normalizeProductPhoneLocation } = require('../utils/normalizeProductPhoneLocation');
+const { resolveProductPhoneLocationForWarehouse } = require('../utils/normalizeProductPhoneLocation');
 const { attachResolvedOriginWarehouses, WAREHOUSE_POPULATE } = require('../utils/warehousePopulate');
 
 const transferImesToMainWarehouse =
@@ -1404,7 +1404,7 @@ async function transferToShop(req, res) {
       await shipment.save();
     }
 
-    const locationLabel = normalizeProductPhoneLocation(sub.city);
+    const locationLabel = resolveProductPhoneLocationForWarehouse(sub);
 
     return res.status(200).json({
       success: true,

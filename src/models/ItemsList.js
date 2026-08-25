@@ -70,14 +70,11 @@ const productSchema = new mongoose.Schema({
     default: null,
   },
   
-  // Phone Location Information
+  // Phone Location Information — legacy city labels or registered shop/warehouse names
   phoneLocation: {
     type: String,
     trim: true,
-    enum: {
-      values: ['Douala', 'Yaounde', 'Bafoussam', 'Bamenda', 'Limbe', 'Other'],
-      message: 'Phone location must be one of: Douala, Yaounde, Bafoussam, Bamenda, Limbe, Other'
-    },
+    maxlength: [120, 'Phone location cannot exceed 120 characters'],
     default: 'Other',
     index: true
   },
