@@ -1,4 +1,5 @@
 const Product = require('../models/ItemsList');
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Warehouse = require('../models/Warehouse');
 const { Order, ORDER_TYPES, ORDER_STATUS, PRODUCT_SOURCE } = require('../models/Order');
@@ -336,6 +337,49 @@ function buildManifestForSimulatedProduct(product, sim, qty, requestedImes = nul
   };
 }
 
+/** Shared receipt snapshot for every order line in one in-shop sale (single printable receipt). */
+function buildDirectSaleBatchReceiptMeta(lines, totalPrice) {
+  const receiptLines = (lines || []).map((line) => ({
+    productName: line.productName,
+    brand: line.brand || '',
+    capacity: line.capacity || '',
+    color: line.color || '',
+    quantity: line.quantity,
+    unitPrice: line.unitPrice,
+    lineTotal: line.lineTotal,
+  }));
+  const receiptUnitRows = [];
+  for (const line of lines || []) {
+    for (const m of line.manifest || []) {
+      receiptUnitRows.push({
+        productName: m.productName || line.productName,
+        brand: m.brand || line.brand || '',
+        capacity: m.capacity || line.capacity || '',
+        color: m.color || line.color || '',
+        ime: m.ime || '',
+        unitPrice: Number(m.unitPrice) > 0 ? Number(m.unitPrice) : line.unitPrice,
+      });
+    }
+  }
+  return {
+    saleBatchId: new mongoose.Types.ObjectId(),
+    receiptGrandTotal: totalPrice,
+    receiptLines,
+    receiptUnitRows,
+  };
+}
+
+function applyDirectSaleBatchToOrderDirectSale(directSale, batchMeta, lineIndex, lineCount, batchOrderRef) {
+  directSale.saleBatchId = batchMeta.saleBatchId;
+  directSale.receiptGrandTotal = batchMeta.receiptGrandTotal;
+  directSale.receiptLines = batchMeta.receiptLines;
+  directSale.receiptUnitRows = batchMeta.receiptUnitRows;
+  directSale.receiptLineIndex = lineIndex;
+  directSale.cartLineCount = lineCount;
+  if (batchOrderRef) directSale.batchOrderRef = batchOrderRef;
+  return directSale;
+}
+
 async function processCartItems(items, { session = null, persist = false, productMap = null } = {}) {
   const lines = [];
   const allManifest = [];
@@ -583,6 +627,9 @@ async function executeWholesaleDirectSaleConfirm({
 
   const orderIds = [];
   let soldImeCount = 0;
+  const batchMeta = buildDirectSaleBatchReceiptMeta(lines, totalPrice);
+  let batchOrderRef = null;
+  let receiptLineIndex = 0;
 
   for (const line of lines) {
     const product = productMap.get(String(line.productId));
@@ -610,16 +657,22 @@ async function executeWholesaleDirectSaleConfirm({
       userNotes,
       staffNotes: 'Direct wholesale in-shop sale — confirmed with receipt.',
       soldImeCodes: taken,
-      directSale: {
-        type: DIRECT_SALE_TYPE.WHOLESALE,
-        customerName,
-        paymentMethod,
-        wholesaleUnitPrice: line.wholesaleUnitPrice,
-        soldUnitPrice: line.unitPrice,
-        imeManifest: line.manifest,
-        cartLineCount: lines.length,
-        ...assignmentFields,
-      },
+      directSale: applyDirectSaleBatchToOrderDirectSale(
+        {
+          type: DIRECT_SALE_TYPE.WHOLESALE,
+          customerName,
+          paymentMethod,
+          wholesaleUnitPrice: line.wholesaleUnitPrice,
+          soldUnitPrice: line.unitPrice,
+          imeManifest: line.manifest,
+          cartLineCount: lines.length,
+          ...assignmentFields,
+        },
+        batchMeta,
+        receiptLineIndex,
+        lines.length,
+        batchOrderRef,
+      ),
       deliveryInfo: {
         deliveryAddress: deliveryAddressFromKey(deliveryLocationKey),
         deliveryStatus: 'pending',
@@ -639,6 +692,19 @@ async function executeWholesaleDirectSaleConfirm({
     const created = await Order.create([orderData], { session });
     const order = created[0];
     orderIds.push(order._id);
+
+    if (!batchOrderRef && order.orderCode) {
+      batchOrderRef = String(order.orderCode);
+      applyDirectSaleBatchToOrderDirectSale(
+        order.directSale,
+        batchMeta,
+        receiptLineIndex,
+        lines.length,
+        batchOrderRef,
+      );
+      order.markModified('directSale');
+      await order.save({ session });
+    }
 
     for (const imeLine of line.manifest || []) {
       if (!imeLine.ime) continue;
@@ -662,11 +728,14 @@ async function executeWholesaleDirectSaleConfirm({
       );
       soldImeCount += 1;
     }
+    receiptLineIndex += 1;
   }
 
   return {
     orderIds,
     orderId: orderIds[0],
+    saleBatchId: batchMeta.saleBatchId,
+    batchOrderRef: batchOrderRef || null,
     totalPrice,
     lines,
     manifest,
@@ -782,6 +851,9 @@ async function executeRetailDirectSaleConfirm({
 
   const orderIds = [];
   let soldImeCount = 0;
+  const batchMeta = buildDirectSaleBatchReceiptMeta(lines, totalPrice);
+  let batchOrderRef = null;
+  let receiptLineIndex = 0;
 
   for (const line of lines) {
     const product = productMap.get(String(line.productId));
@@ -809,18 +881,24 @@ async function executeRetailDirectSaleConfirm({
       userNotes,
       staffNotes: 'Direct retail in-shop sale — confirmed.',
       soldImeCodes: taken,
-      directSale: {
-        type: DIRECT_SALE_TYPE.RETAIL,
-        customerName,
-        customerPhone: customerPhone || null,
-        customerEmail: customerEmail || null,
-        paymentMethod,
-        wholesaleUnitPrice: line.wholesaleUnitPrice,
-        soldUnitPrice: line.unitPrice,
-        imeManifest: line.manifest,
-        cartLineCount: lines.length,
-        ...assignmentFields,
-      },
+      directSale: applyDirectSaleBatchToOrderDirectSale(
+        {
+          type: DIRECT_SALE_TYPE.RETAIL,
+          customerName,
+          customerPhone: customerPhone || null,
+          customerEmail: customerEmail || null,
+          paymentMethod,
+          wholesaleUnitPrice: line.wholesaleUnitPrice,
+          soldUnitPrice: line.unitPrice,
+          imeManifest: line.manifest,
+          cartLineCount: lines.length,
+          ...assignmentFields,
+        },
+        batchMeta,
+        receiptLineIndex,
+        lines.length,
+        batchOrderRef,
+      ),
       deliveryInfo: {
         deliveryAddress: deliveryAddressFromKey(deliveryLocationKey),
         deliveryStatus: 'pending',
@@ -840,6 +918,19 @@ async function executeRetailDirectSaleConfirm({
     const created = await Order.create([orderData], { session });
     const order = created[0];
     orderIds.push(order._id);
+
+    if (!batchOrderRef && order.orderCode) {
+      batchOrderRef = String(order.orderCode);
+      applyDirectSaleBatchToOrderDirectSale(
+        order.directSale,
+        batchMeta,
+        receiptLineIndex,
+        lines.length,
+        batchOrderRef,
+      );
+      order.markModified('directSale');
+      await order.save({ session });
+    }
 
     for (const imeLine of line.manifest || []) {
       if (!imeLine.ime) continue;
@@ -863,11 +954,14 @@ async function executeRetailDirectSaleConfirm({
       );
       soldImeCount += 1;
     }
+    receiptLineIndex += 1;
   }
 
   return {
     orderIds,
     orderId: orderIds[0],
+    saleBatchId: batchMeta.saleBatchId,
+    batchOrderRef: batchOrderRef || null,
     totalPrice,
     lines,
     manifest,
