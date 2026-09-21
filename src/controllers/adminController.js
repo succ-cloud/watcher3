@@ -1,7 +1,8 @@
 const User = require('../models/User');
 const { ROLES, ACCOUNT_STATUS } = require('../models/User');
 const bcrypt = require('bcrypt');
-const { buildAdminNotesPasswordValue } = require('../utils/adminCredential');
+const { attachAdminUserResponse } = require('../utils/adminUserResponse');
+const { setEphemeralAdminPassword } = require('../utils/ephemeralAdminPassword');
 const BusinessCity = require('../models/BusinessCity');
 const TransactionMethod = require('../models/TransactionMethod');
 const { Order } = require('../models/Order');
@@ -304,8 +305,6 @@ const createWholesaler = async (req, res) => {
             tel: normalizedTel,
             whatsappNumber: normalizedWhatsapp,
             password: hashedPwd,
-            adminCredentialNote: String(password),
-            adminNotes: buildAdminNotesPasswordValue(password),
             role: ROLES.WHOLESALER,
             accountStatus: ACCOUNT_STATUS.ACTIVE,
             validatedBy: adminId,
@@ -318,20 +317,14 @@ const createWholesaler = async (req, res) => {
 
         const result = await User.create(payload);
 
+        if (adminId) {
+            setEphemeralAdminPassword(adminId, result._id, password);
+        }
+
         res.status(201).json({
             success: true,
             message: 'Vendor account created and activated.',
-            user: {
-                id: result._id,
-                name: result.name,
-                businessName: result.businessName,
-                businessAddress: result.businessAddress,
-                tel: result.tel,
-                whatsappNumber: result.whatsappNumber,
-                email: result.email || '',
-                role: result.role,
-                accountStatus: result.accountStatus,
-            },
+            user: attachAdminUserResponse(result, req, { justSetPassword: password }),
         });
     } catch (error) {
         console.error('Error creating wholesaler:', error);

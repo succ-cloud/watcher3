@@ -5,7 +5,7 @@ const { ROLES } = require('../models/User');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const normalizeRoleToken = require('../utils/normalizeRoleToken');
-const { buildAdminNotesPasswordValue } = require('../utils/adminCredential');
+const { setEphemeralAdminPassword, resolveRequestUserId } = require('../utils/ephemeralAdminPassword');
 const { ensureDefaultBusinessCities, listActiveBusinessCities } = require('../utils/businessCities');
 const { resolveBusinessAddressFromShopIds } = require('../utils/salesmanShopRouting');
 
@@ -160,13 +160,18 @@ const handleNewUser = async (req, res) => {
             tel,
             whatsappNumber,
             password: hashedPwd,
-            adminCredentialNote: String(password),
-            adminNotes: buildAdminNotesPasswordValue(password),
             role: userRoleFinal,
             assignedShops: userRoleFinal === ROLES.SALESMAN ? shopIdList : [],
         };
 
         const result = await User.create(createPayload);
+
+        if (userRoleFinal === ROLES.SALESMAN || userRoleFinal === ROLES.ADMIN) {
+            const adminId = resolveRequestUserId(req);
+            if (adminId) {
+                setEphemeralAdminPassword(adminId, result._id, password);
+            }
+        }
 
         console.log('New user created:', {
             id: result._id,

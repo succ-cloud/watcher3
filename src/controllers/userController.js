@@ -3,7 +3,18 @@ const Warehouse = require('../models/Warehouse');
 const { WAREHOUSE_TYPES } = require('../models/Warehouse');
 const { ROLES, ACCOUNT_STATUS } = require('../models/User');
 const bcrypt = require('bcrypt');
-const { attachPasswordDisplay, recordPasswordForAdmin, buildAdminNotesPasswordValue } = require('../utils/adminCredential');
+const {
+  attachPasswordDisplay,
+  clearPlaintextCredentials,
+  purgePlaintextCredentialsFromDatabase,
+  stripLegacyPasswordFromAdminNotes,
+} = require('../utils/adminCredential');
+const { attachAdminUserResponse } = require('../utils/adminUserResponse');
+const {
+  setEphemeralAdminPassword,
+  resolveRequestUserId,
+  requesterIsAdmin,
+} = require('../utils/ephemeralAdminPassword');
 const { ensureDefaultBusinessCities, listActiveBusinessCities } = require('../utils/businessCities');
 const {
   ensureDefaultTransactionMethods,
@@ -328,6 +339,10 @@ const getAllUsersByRole = async (req, res) => {
     
     // Get total count
     const total = await User.countDocuments(filter);
+
+    purgePlaintextCredentialsFromDatabase(User).catch((err) => {
+      console.error('purgePlaintextCredentialsFromDatabase:', err);
+    });
     
     // Get counts by role
     const roleCounts = await User.aggregate([
@@ -344,7 +359,7 @@ const getAllUsersByRole = async (req, res) => {
     
     res.json({
       success: true,
-      data: users.map((u) => attachPasswordDisplay(u)),
+      data: users.map((u) => attachAdminUserResponse(u, req)),
       counts,
       pagination: {
         page: parseInt(page),
@@ -383,7 +398,7 @@ const getUserById = async (req, res) => {
     
     const requesterIsAdmin = requesterRole === ROLES.ADMIN;
     const user = await User.findById(id)
-      .select(requesterIsAdmin ? '-password -refreshToken' : '-password -refreshToken -adminCredentialNote')
+      .select('-password -refreshToken')
       .populate('validatedBy', 'name role')
       .populate({ path: 'assignedShops', select: 'name city address type isActive', strictPopulate: false });
     
@@ -396,7 +411,7 @@ const getUserById = async (req, res) => {
     
     res.json({
       success: true,
-      data: attachPasswordDisplay(user),
+      data: requesterIsAdmin(req) ? attachAdminUserResponse(user, req) : attachPasswordDisplay(user),
     });
     
   } catch (error) {
@@ -545,7 +560,8 @@ const updateUserProfile = async (req, res) => {
       }
 
       if (adminNotes !== undefined) {
-        user.adminNotes = String(adminNotes || '').trim() || undefined;
+        const cleaned = stripLegacyPasswordFromAdminNotes(adminNotes);
+        user.adminNotes = cleaned || undefined;
       }
     }
 
@@ -555,7 +571,7 @@ const updateUserProfile = async (req, res) => {
     return res.json({
       success: true,
       message: 'Account updated.',
-      data: attachPasswordDisplay(user),
+      data: isAdmin ? attachAdminUserResponse(user, req) : attachPasswordDisplay(user),
     });
   } catch (error) {
     console.error('Error updating user profile:', error);
@@ -605,7 +621,8 @@ const updateUserStatus = async (req, res) => {
     }
     
     if (adminNotes) {
-      user.adminNotes = adminNotes;
+      const cleaned = stripLegacyPasswordFromAdminNotes(adminNotes);
+      user.adminNotes = cleaned || undefined;
     }
     
     await user.save();
@@ -814,7 +831,7 @@ const getUserStats = async (req, res) => {
 };
 
 /**
- * Admin sets a new password and records it for account directory visibility.
+ * Admin sets a new password (hashed only in DB; plain text returned once in the response).
  * @route PATCH /api/users/:id/password
  */
 const setUserPasswordByAdmin = async (req, res) => {
@@ -835,18 +852,17 @@ const setUserPasswordByAdmin = async (req, res) => {
     }
 
     const hashedPwd = await bcrypt.hash(password, 10);
-    await recordPasswordForAdmin(User, user._id, password);
+    await clearPlaintextCredentials(User, user._id);
     user.password = hashedPwd;
     await user.save();
+
+    const adminId = resolveRequestUserId(req);
+    setEphemeralAdminPassword(adminId, user._id, password);
 
     res.json({
       success: true,
       message: 'Password updated.',
-      data: attachPasswordDisplay({
-        ...(user.toObject ? user.toObject() : user),
-        adminCredentialNote: String(password),
-        adminNotes: buildAdminNotesPasswordValue(password),
-      }),
+      data: attachAdminUserResponse(user, req, { justSetPassword: password }),
     });
   } catch (error) {
     console.error('Error setting user password:', error);

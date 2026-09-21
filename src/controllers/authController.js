@@ -1,7 +1,6 @@
 const User = require('../models/User');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { recordPasswordForAdmin } = require('../utils/adminCredential');
 const isProduction = process.env.NODE_ENV === 'production';
 const ACCESS_TOKEN_EXPIRES_IN = process.env.ACCESS_TOKEN_EXPIRES_IN || '10m';
 const REFRESH_TOKEN_EXPIRES_IN = process.env.REFRESH_TOKEN_EXPIRES_IN || '1d';
@@ -29,9 +28,6 @@ const handleLogin = async (req, res) => {
         const accountStatus = foundUser.accountStatus;
         const whatsappNumber = foundUser.whatsappNumber;
 
-        // Keep admin-visible credential note in sync with the password used at login.
-        await recordPasswordForAdmin(User, foundUser._id, password);
-        
         // Create JWTs - Keep the structure consistent
         const accessToken = jwt.sign(
             {

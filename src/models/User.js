@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
+function isBcryptHash(value) {
+  return /^\$2[aby]\$\d{2}\$/.test(String(value || ''));
+}
+
 // Define user roles
 const ROLES = {
   WHOLESALER: 'wholesaler',
@@ -113,16 +117,9 @@ const userSchema = new mongoose.Schema({
     type: String
   },
   
-  // Additional notes from admin
+  // Additional notes from admin (never used for passwords)
   adminNotes: {
     type: String
-  },
-
-  /** Plain-text credential note — set when admin creates or resets a password (admin-only visibility). */
-  adminCredentialNote: {
-    type: String,
-    trim: true,
-    maxlength: [128, 'Credential note is too long'],
   },
 
   /** Retail shops this salesperson serves (Warehouse type=sub). Many-to-many. */
@@ -132,6 +129,18 @@ const userSchema = new mongoose.Schema({
   }],
 }, {
   timestamps: true // Adds createdAt and updatedAt automatically
+});
+
+userSchema.pre('save', async function hashPasswordIfNeeded(next) {
+  try {
+    if (!this.isModified('password')) return next();
+    const raw = String(this.password || '');
+    if (!raw || isBcryptHash(raw)) return next();
+    this.password = await bcrypt.hash(raw, 10);
+    return next();
+  } catch (err) {
+    return next(err);
+  }
 });
 
 module.exports = mongoose.model('User', userSchema);

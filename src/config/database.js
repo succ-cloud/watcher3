@@ -1,6 +1,7 @@
 // Import mongoose - this is our database library
 const mongoose = require('mongoose');
 const { scheduleOrderCodeBackfill } = require('../utils/orderDisplayCode');
+const { purgePlaintextCredentialsFromDatabase } = require('../utils/adminCredential');
 
 // Function to connect to MongoDB
 const connectDB = async () => {
@@ -13,6 +14,10 @@ const connectDB = async () => {
     const conn = await mongoose.connect(uri, { serverSelectionTimeoutMS: 20000 });
     console.log(`MongoDB Connected: ${conn.connection.host}`);
     scheduleOrderCodeBackfill();
+    const User = require('../models/User');
+    purgePlaintextCredentialsFromDatabase(User)
+      .then(() => console.log('User credential cleanup: legacy plain-text password fields removed from database'))
+      .catch((err) => console.error('User credential cleanup failed:', err));
   } catch (error) {
     const msg = String(error.message || error);
     console.error('Database connection error:', msg);
