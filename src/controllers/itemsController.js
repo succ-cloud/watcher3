@@ -18,6 +18,7 @@ const User = require('../models/User');
 const { isUsaBusinessAddress } = require('../utils/adminAccountRegion');
 const { SoldIme, SOLD_IME_STATUS } = require('../models/SoldIme');
 const Order = require('../models/Order').Order;
+const { applyDirectSaleRevokeToOrders } = require('../utils/revokeDirectSaleUnit');
 const { normalizedImeList, resolveEffectiveLineStock } = require('../utils/productIme');
 const { vendorListingStockKeyFromProduct } = require('../utils/pricingCatalog');
 const { WAREHOUSE_POPULATE, attachResolvedOriginWarehouses } = require('../utils/warehousePopulate');
@@ -3246,48 +3247,7 @@ const revokeSoldOutInventoryUnit = async (req, res) => {
     }
     await product.save({ session });
 
-    let order = null;
-    if (sold.orderId) {
-      order = await Order.findById(sold.orderId).session(session);
-    }
-    if (!order && ime) {
-      order = await Order.findOne({
-        $or: [{ soldImeCodes: ime }, { 'directSale.imeManifest.ime': ime }],
-      }).session(session);
-    }
-    if (order) {
-      const soldImeCodes = Array.isArray(order.soldImeCodes) ? order.soldImeCodes : [];
-      order.soldImeCodes = soldImeCodes.filter((code) => String(code || '').trim() !== ime);
-
-      const directSale =
-        order.directSale && typeof order.directSale === 'object' && !Array.isArray(order.directSale)
-          ? { ...order.directSale }
-          : {};
-      const imeManifest = Array.isArray(directSale.imeManifest) ? directSale.imeManifest : [];
-      directSale.imeManifest = imeManifest.filter(
-        (line) => String(line?.ime || '').trim() !== ime,
-      );
-
-      const effectiveRemaining = Math.max(
-        order.soldImeCodes.length,
-        directSale.imeManifest.filter((line) => String(line?.ime || '').trim()).length,
-      );
-
-      if (effectiveRemaining <= 0) {
-        await Order.deleteOne({ _id: order._id }).session(session);
-      } else {
-        const unitPriceFromOrder =
-          Number(sold.unitPrice) ||
-          Number(directSale.soldUnitPrice) ||
-          Number(order.productPrice) ||
-          0;
-        order.quantity = effectiveRemaining;
-        order.finalPrice = unitPriceFromOrder > 0 ? unitPriceFromOrder * effectiveRemaining : Math.max(0, Number(order.finalPrice) || 0);
-        order.originalTotal = order.finalPrice;
-        order.directSale = directSale;
-        await order.save({ session });
-      }
-    }
+    await applyDirectSaleRevokeToOrders(session, sold, ime);
 
     const deletedSoldImeId = String(sold._id);
     await SoldIme.deleteOne({ _id: sold._id }).session(session);
@@ -3296,7 +3256,8 @@ const revokeSoldOutInventoryUnit = async (req, res) => {
     session.endSession();
     return res.status(200).json({
       success: true,
-      message: 'Sale revoked. Unit restored to shop inventory. Sold record and order removed when no units remain.',
+      message:
+        'Sale revoked for this unit. Stock restored. Other items from the same checkout stay sold unless revoked separately.',
       data: {
         soldImeId: deletedSoldImeId,
         ime,
