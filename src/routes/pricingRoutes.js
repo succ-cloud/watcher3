@@ -25,6 +25,21 @@ function pricingImageUpload(maxCount = 1) {
 /** Admin + salesperson can browse the retail pricing catalog. */
 router.get('/', verifyRole([ROLES.ADMIN, ROLES_LIST.SALESMAN]), pricingController.listPricing);
 
+/** Custom brands / model names for direct-sale pricing form (built-in list merged on client). */
+router.get(
+  '/catalog-options',
+  verifyRole([ROLES.ADMIN, ROLES_LIST.SALESMAN]),
+  pricingController.getCatalogOptions,
+);
+
+router.post('/catalog-options/brands', verifyRole(ROLES.ADMIN), pricingController.postCatalogBrand);
+
+router.post(
+  '/catalog-options/product-names',
+  verifyRole(ROLES.ADMIN),
+  pricingController.postCatalogProductName,
+);
+
 /** Any authenticated user — pricing-table photos only (for vendor shop listing). */
 router.get('/images/shop', pricingController.listShopPricingImages);
 
