@@ -1384,8 +1384,23 @@ const deleteProduct = async (req, res) => {
       }
     }
 
+    const bulkShipmentId = product.bulkShipment || null;
+
     // Delete product from database
     await Product.findByIdAndDelete(req.params.id);
+
+    if (bulkShipmentId) {
+      try {
+        const remaining = await Product.countDocuments({ bulkShipment: bulkShipmentId });
+        if (remaining === 0) {
+          await BulkShipment.findByIdAndDelete(bulkShipmentId);
+        } else {
+          await BulkShipment.findByIdAndUpdate(bulkShipmentId, { productCount: remaining });
+        }
+      } catch (bulkErr) {
+        console.error('Bulk shipment count update after delete:', bulkErr);
+      }
+    }
 
     res.status(200).json({
       success: true,
